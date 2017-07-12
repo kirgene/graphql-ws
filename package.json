@@ -41,7 +41,7 @@
     "@types/node": "^8.0.8",
     "@types/sinon": "^2.3.0",
     "@types/ws": "^3.0.0",
-    "chai": "^4.0.2",
+    "chai": "4.0.2",
     "graphql": "^0.10.1",
     "istanbul": "^1.0.0-alpha.2",
     "lodash": "^4.17.1",
