@@ -36,7 +36,7 @@
   "devDependencies": {
     "@types/chai": "^4.0.0",
     "@types/graphql": "^0.9.3",
-    "@types/lodash": "^4.14.68",
+    "@types/lodash": "4.14.70",
     "@types/mocha": "^2.2.41",
     "@types/node": "^8.0.8",
     "@types/sinon": "^2.3.0",
