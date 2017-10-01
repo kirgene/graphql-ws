@@ -1,4 +1,5 @@
 export * from './client';
 export * from './server';
-export * from './message-types';
+export * from './message-type';
 export * from './protocol';
+export * from './types/File';

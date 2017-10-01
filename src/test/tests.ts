@@ -24,7 +24,7 @@ import {
 
 import { PubSub, withFilter } from 'graphql-subscriptions';
 
-import MessageTypes  from '../message-types';
+import { MessageType } from '../message-type';
 
 import {
   GRAPHQL_SUBSCRIPTIONS,
@@ -32,7 +32,7 @@ import {
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { SubscriptionServer, ExecutionParams } from '../server';
-import { SubscriptionClient } from '../client';
+import {Observable, SubscriptionClient} from '../client';
 import { OperationMessage } from '../server';
 import { $$asyncIterator } from 'iterall';
 
@@ -256,11 +256,28 @@ describe('Client', function () {
     }
   });
 
+  it('file upload', (done) => {
+    const client = new SubscriptionClient(`ws://localhost:${TEST_PORT}/`);
+
+    client.request({
+      query: 'mutation uploadFile($file: File!) { uploadFile(file: $file) }',
+      variables: {
+        file: new File('/bin/bash'),
+      },
+    }).subscribe({
+      next: () => assert(false),
+      error: () => {
+        client.close();
+        done();
+      },
+    });
+  });
+
   it('should send GQL_CONNECTION_INIT message when creating the connection', (done) => {
     wsServer.on('connection', (connection: any) => {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
-        expect(parsedMessage.type).to.equals(MessageTypes.GQL_CONNECTION_INIT);
+        expect(parsedMessage.type).to.equals(MessageType.GQL_CONNECTION_INIT);
         done();
       });
     });
@@ -277,11 +294,11 @@ describe('Client', function () {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
         // mock server
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_INIT) {
-          connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK, payload: {} }));
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_INIT) {
+          connection.send(JSON.stringify({ type: MessageType.GQL_CONNECTION_ACK, payload: {} }));
           initReceived = true;
         }
-        if (parsedMessage.type === MessageTypes.GQL_START) {
+        if (parsedMessage.type === MessageType.GQL_START) {
           expect(initReceived).to.be.true;
           if ( sub ) {
             sub.unsubscribe();
@@ -457,12 +474,12 @@ describe('Client', function () {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
         // mock server
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_INIT) {
-          connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK, payload: {} }));
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_INIT) {
+          connection.send(JSON.stringify({ type: MessageType.GQL_CONNECTION_ACK, payload: {} }));
         }
-        if (parsedMessage.type === MessageTypes.GQL_START) {
+        if (parsedMessage.type === MessageType.GQL_START) {
           const dataMessage = {
-            type: MessageTypes.GQL_DATA,
+            type: MessageType.GQL_DATA,
             id: parsedMessage.id,
             payload: {
               data: {
@@ -574,7 +591,7 @@ describe('Client', function () {
     wsServer.on('connection', (connection: any) => {
       connection.on('message', (message: any) => {
         connection.send(JSON.stringify({
-          type: MessageTypes.GQL_CONNECTION_ERROR,
+          type: MessageType.GQL_CONNECTION_ERROR,
           payload: { message: 'test error' },
         }));
       });
@@ -594,7 +611,7 @@ describe('Client', function () {
     wsServer.on('connection', (connection: any) => {
       connection.on('message', (message: any) => {
         connection.send(JSON.stringify({
-          type: MessageTypes.GQL_CONNECTION_ERROR,
+          type: MessageType.GQL_CONNECTION_ERROR,
           payload: { message: 'test error' },
         }), () => {
           connection.close();
@@ -613,7 +630,7 @@ describe('Client', function () {
   it('should handle correctly GQL_CONNECTION_ACK message', (done) => {
     wsServer.on('connection', (connection: any) => {
       connection.on('message', (message: any) => {
-        connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK }));
+        connection.send(JSON.stringify({ type: MessageType.GQL_CONNECTION_ACK }));
       });
     });
 
@@ -742,9 +759,9 @@ describe('Client', function () {
     wsServer.on('connection', (connection: WebSocket) => {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
-        if (parsedMessage.type === MessageTypes.GQL_START) {
+        if (parsedMessage.type === MessageType.GQL_START) {
           connection.send(JSON.stringify({
-            type: MessageTypes.GQL_ERROR,
+            type: MessageType.GQL_ERROR,
             id: parsedMessage.id,
             payload,
           }));
@@ -895,7 +912,7 @@ describe('Client', function () {
       connections += 1;
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
-        if (parsedMessage.type === MessageTypes.GQL_START) {
+        if (parsedMessage.type === MessageType.GQL_START) {
           if (connections === 1) {
             client.client.close();
           } else {
@@ -973,7 +990,7 @@ describe('Client', function () {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
         // mock server
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_INIT) {
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_INIT) {
           connection.close();
         }
       });
@@ -997,9 +1014,9 @@ describe('Client', function () {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
         // mock server
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_INIT) {
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_INIT) {
           ++connections;
-          connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK, payload: {} }));
+          connection.send(JSON.stringify({ type: MessageType.GQL_CONNECTION_ACK, payload: {} }));
           connection.close();
         }
       });
@@ -1020,7 +1037,7 @@ describe('Client', function () {
     const originalOnMessage = subscriptionsClient.client.onmessage;
     subscriptionsClient.client.onmessage = (dataReceived: any) => {
       let receivedDataParsed = JSON.parse(dataReceived.data);
-      if (receivedDataParsed.type === MessageTypes.GQL_CONNECTION_KEEP_ALIVE) {
+      if (receivedDataParsed.type === MessageType.GQL_CONNECTION_KEEP_ALIVE) {
         if (!wasKAReceived) {
           wasKAReceived = true;
           originalOnMessage(dataReceived);
@@ -1043,7 +1060,7 @@ describe('Client', function () {
     const originalOnMessage = subscriptionsClient.client.onmessage;
     subscriptionsClient.client.onmessage = (dataReceived: any) => {
       let receivedDataParsed = JSON.parse(dataReceived.data);
-      if (receivedDataParsed.type === MessageTypes.GQL_CONNECTION_KEEP_ALIVE) {
+      if (receivedDataParsed.type === MessageType.GQL_CONNECTION_KEEP_ALIVE) {
         ++receivedKeepAlive;
         originalOnMessage(dataReceived);
       }
@@ -1095,7 +1112,7 @@ describe('Client', function () {
 
     const originalOnMessage = subscriptionsClient.client.onmessage;
     const dataToSend = {
-      data: JSON.stringify({ id: 1, type: MessageTypes.GQL_COMPLETE }),
+      data: JSON.stringify({ id: 1, type: MessageType.GQL_COMPLETE }),
     };
 
     expect(subscriptionsClient.operations).to.have.property('1');
@@ -1115,11 +1132,11 @@ describe('Client', function () {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
         // mock server
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_INIT) {
-          connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK, payload: {} }));
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_INIT) {
+          connection.send(JSON.stringify({ type: MessageType.GQL_CONNECTION_ACK, payload: {} }));
         }
 
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_TERMINATE) {
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_TERMINATE) {
           receivedConnecitonTerminate = true;
         }
       });
@@ -1128,7 +1145,7 @@ describe('Client', function () {
     const originalOnMessage = subscriptionsClient.client.onmessage;
     subscriptionsClient.client.onmessage = (dataReceived: any) => {
       let receivedDataParsed = JSON.parse(dataReceived.data);
-      if (receivedDataParsed.type === MessageTypes.GQL_CONNECTION_ACK) {
+      if (receivedDataParsed.type === MessageType.GQL_CONNECTION_ACK) {
         originalOnMessage(dataReceived);
         subscriptionsClient.close();
       }
@@ -1153,11 +1170,11 @@ describe('Client', function () {
       connection.on('message', (message: any) => {
         const parsedMessage = JSON.parse(message);
         // mock server
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_INIT) {
-          connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK, payload: {} }));
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_INIT) {
+          connection.send(JSON.stringify({ type: MessageType.GQL_CONNECTION_ACK, payload: {} }));
         }
 
-        if (parsedMessage.type === MessageTypes.GQL_CONNECTION_TERMINATE) {
+        if (parsedMessage.type === MessageType.GQL_CONNECTION_TERMINATE) {
           receivedConnecitonTerminate = true;
         }
       });
@@ -1166,7 +1183,7 @@ describe('Client', function () {
     const originalOnMessage = subscriptionsClient.client.onmessage;
     subscriptionsClient.client.onmessage = (dataReceived: any) => {
       let receivedDataParsed = JSON.parse(dataReceived.data);
-      if (receivedDataParsed.type === MessageTypes.GQL_CONNECTION_ACK) {
+      if (receivedDataParsed.type === MessageType.GQL_CONNECTION_ACK) {
         originalOnMessage(dataReceived);
         subscriptionsClient.close(false);
       }
@@ -1488,9 +1505,11 @@ describe('Server', function () {
     subscriptionsClient.client.onmessage = (dataReceived: any) => {
       let messageData = JSON.parse(dataReceived.data);
 
+      /*
       if (messageData.type === MessageTypes.INIT_FAIL) {
         messageData.type = MessageTypes.GQL_CONNECTION_ERROR;
       }
+      */
 
       dataReceived.data = JSON.stringify(messageData);
       originalOnMessage(dataReceived);
@@ -1689,7 +1708,7 @@ describe('Server', function () {
     setTimeout(function () {
       client1.client.onmessage = (message: any) => {
         let messageData = JSON.parse(message.data);
-        assert.equal(messageData.type, MessageTypes.GQL_DATA);
+        assert.equal(messageData.type, MessageType.GQL_DATA);
         const result = messageData.payload;
         assert.isAbove(result.errors.length, 0, 'Query should\'ve failed');
         done();
@@ -1842,7 +1861,7 @@ describe('Server', function () {
       done();
     }, 150);
     client4.client.onmessage = (message: any) => {
-      if (JSON.parse(message.data).type === MessageTypes.GQL_DATA) {
+      if (JSON.parse(message.data).type === MessageType.GQL_DATA) {
         assert(false);
       }
     };
@@ -1873,7 +1892,7 @@ describe('Server', function () {
     const client = new WebSocket(`ws://localhost:${TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
     client.onmessage = (message: any) => {
       let messageData = JSON.parse(message.data);
-      assert.equal(messageData.type, MessageTypes.GQL_CONNECTION_ERROR);
+      assert.equal(messageData.type, MessageType.GQL_CONNECTION_ERROR);
       assert.isDefined(messageData.payload, 'Number of errors is greater than 0.');
       client.close();
       done();
@@ -1887,7 +1906,7 @@ describe('Server', function () {
     const client = new WebSocket(`ws://localhost:${TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
     client.onmessage = (message: any) => {
       let messageData = JSON.parse(message.data);
-      assert.equal(messageData.type, MessageTypes.GQL_ERROR);
+      assert.equal(messageData.type, MessageType.GQL_ERROR);
       assert.isDefined(messageData.payload, 'Number of errors is greater than 0.');
       client.close();
       done();
@@ -1902,7 +1921,7 @@ describe('Server', function () {
     const client = new WebSocket(`ws://localhost:${TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
 
     client.onopen = () => {
-      client.send(JSON.stringify({ type: MessageTypes.GQL_STOP, id: 'toString' }));
+      client.send(JSON.stringify({ type: MessageType.GQL_STOP, id: 'toString' }));
       // Strangely we don't send any acknowledgement for unsubbing from an
       // unknown sub, so we just set a timeout and implicitly assert that
       // there's no uncaught exception within the server code.
@@ -1931,7 +1950,7 @@ describe('Server', function () {
     let yieldCount = 0;
     client.onmessage = (message: any) => {
       const parsedMessage = JSON.parse(message.data);
-      if (parsedMessage.type === MessageTypes.GQL_CONNECTION_KEEP_ALIVE) {
+      if (parsedMessage.type === MessageType.GQL_CONNECTION_KEEP_ALIVE) {
         yieldCount += 1;
         if (yieldCount > 1) {
           client.close();
@@ -1945,7 +1964,7 @@ describe('Server', function () {
 describe('Message Types', function () {
   it('should throw an error if static class is instantiated', (done) => {
     expect(() => {
-      new MessageTypes();
+      MessageType;
     }).to.throw('Static Class');
     done();
   });

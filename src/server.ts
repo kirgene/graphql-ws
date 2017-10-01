@@ -1,6 +1,6 @@
 import * as WebSocket from 'ws';
 
-import MessageTypes from './message-types';
+import { MessageType } from './message-type';
 import { GRAPHQL_WS, GRAPHQL_SUBSCRIPTIONS } from './protocol';
 import isObject = require('lodash.isobject');
 import {
@@ -17,8 +17,9 @@ import { createEmptyIterable } from './utils/empty-iterable';
 import { createAsyncIterator, forAwaitEach, isAsyncIterable } from 'iterall';
 import { createIterableFromPromise } from './utils/promise-to-iterable';
 import { isASubscriptionOperation } from './utils/is-subscriptions';
-import { parseLegacyProtocolMessage } from './legacy/parse-legacy-protocol';
 import { IncomingMessage } from 'http';
+import { Subject } from 'rxjs';
+import File from './types/File';
 
 export type ExecutionIterator = AsyncIterator<ExecutionResult>;
 
@@ -36,22 +37,32 @@ export type ConnectionContext = {
   initPromise?: Promise<any>,
   isLegacy: boolean,
   socket: WebSocket,
+  files: {
+    [id: string]: any,
+  }
   operations: {
-    [opId: string]: ExecutionIterator,
+    [opId: number]: ExecutionIterator,
   },
 };
 
-export interface OperationMessagePayload {
+export interface OperationMessageQueryPayload {
   [key: string]: any; // this will support for example any options sent in init like the auth token
   query?: string;
   variables?: { [key: string]: any };
   operationName?: string;
 }
 
+export interface OperationMessageFilePayload {
+  fileId: number;
+  currentChunk: number;
+  chunks: number;
+  buffer: ArrayBuffer;
+}
+
 export interface OperationMessage {
-  payload?: OperationMessagePayload;
+  payload?: OperationMessageQueryPayload | OperationMessageFilePayload;
   id?: string;
-  type: string;
+  type: number;
 }
 
 export type ExecuteFunction = (schema: GraphQLSchema,
@@ -129,6 +140,7 @@ export class SubscriptionServer {
       // Add `upgradeReq` to the socket object to support old API, without creating a memory leak
       // See: https://github.com/websockets/ws/pull/1099
       (socket as any).upgradeReq = request;
+      (socket as any).binaryType = 'arraybuffer';
       // NOTE: the old GRAPHQL_SUBSCRIPTIONS protocol support should be removed in the future
       if (socket.protocol === undefined ||
         (socket.protocol.indexOf(GRAPHQL_WS) === -1 && socket.protocol.indexOf(GRAPHQL_SUBSCRIPTIONS) === -1)) {
@@ -144,12 +156,13 @@ export class SubscriptionServer {
       connectionContext.isLegacy = false;
       connectionContext.socket = socket;
       connectionContext.operations = {};
+      connectionContext.files = {};
 
       // Regular keep alive messages if keepAlive is set
       if (this.keepAlive) {
         const keepAliveTimer = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN) {
-            this.sendMessage(connectionContext, undefined, MessageTypes.GQL_CONNECTION_KEEP_ALIVE, undefined);
+            this.sendMessage(connectionContext, undefined, MessageType.GQL_CONNECTION_KEEP_ALIVE, undefined);
           } else {
             clearInterval(keepAliveTimer);
           }
@@ -160,9 +173,9 @@ export class SubscriptionServer {
         if (error) {
           this.sendError(
             connectionContext,
-            '',
+            0,
             { message: error.message ? error.message : error },
-            MessageTypes.GQL_CONNECTION_ERROR,
+            MessageType.GQL_CONNECTION_ERROR,
           );
 
           setTimeout(() => {
@@ -208,13 +221,15 @@ export class SubscriptionServer {
       throw new Error('`schema` is missing');
     }
 
+//    Object.assign(schema.getTypeMap(), File);
+
     this.schema = schema;
     this.rootValue = rootValue;
     this.execute = execute;
     this.subscribe = subscribe;
   }
 
-  private unsubscribe(connectionContext: ConnectionContext, opId: string) {
+  private unsubscribe(connectionContext: ConnectionContext, opId: number) {
     if (connectionContext.operations && connectionContext.operations[opId]) {
       if (connectionContext.operations[opId].return) {
         connectionContext.operations[opId].return();
@@ -230,8 +245,55 @@ export class SubscriptionServer {
 
   private onClose(connectionContext: ConnectionContext) {
     Object.keys(connectionContext.operations).forEach((opId) => {
-      this.unsubscribe(connectionContext, opId);
+      this.unsubscribe(connectionContext, parseInt(opId, 10));
     });
+  }
+
+  private parseMessage(buffer: any) {
+    const message = new DataView(buffer);
+    let result;
+    let payloadBase = {
+      id: message.getUint32(0, true),
+      type: message.getUint32(4, true),
+    };
+    if (payloadBase.type === MessageType.GQL_DATA) {
+      const payload: OperationMessageFilePayload = {
+        fileId: message.getUint32(8, true),
+        currentChunk: message.getUint32(12, true),
+        chunks: message.getUint32(16, true),
+        buffer: buffer.slice(20),
+      };
+      result = {
+        ...payloadBase,
+        payload,
+      };
+    } else {
+      const payload: OperationMessageQueryPayload = JSON.parse(Buffer.from(buffer, 8).toString());
+      result = {
+        ...payloadBase,
+        payload,
+      };
+    }
+    return result;
+  }
+
+  private getFileId(opId: number, fileId: number): string {
+    return `${opId}-${fileId}`;
+  }
+
+  private processFiles(connectionContext: ConnectionContext, opId: number, variables: Object) {
+    for (let k of Object.keys(variables)) {
+      const val = (<any>variables)[k];
+      if (val.hasOwnProperty('___file')) {
+        const fileId = this.getFileId(opId, val.id);
+        connectionContext.files[fileId] = new Subject();
+        (<any>variables)[k] = {
+          name : val.name,
+          file: connectionContext.files[fileId],
+          chunks: val.chunks,
+        };
+      }
+    }
   }
 
   private onMessage(connectionContext: ConnectionContext) {
@@ -243,17 +305,10 @@ export class SubscriptionServer {
     });
 
     return (message: any) => {
-      let parsedMessage: OperationMessage;
-      try {
-        parsedMessage = parseLegacyProtocolMessage(connectionContext, JSON.parse(message));
-      } catch (e) {
-        this.sendError(connectionContext, null, { message: e.message }, MessageTypes.GQL_CONNECTION_ERROR);
-        return;
-      }
-
+      const parsedMessage = this.parseMessage(message);
       const opId = parsedMessage.id;
       switch (parsedMessage.type) {
-        case MessageTypes.GQL_CONNECTION_INIT:
+        case MessageType.GQL_CONNECTION_INIT:
           let onConnectPromise = Promise.resolve(true);
           if (this.onConnect) {
             onConnectPromise = new Promise((resolve, reject) => {
@@ -277,7 +332,7 @@ export class SubscriptionServer {
             this.sendMessage(
               connectionContext,
               undefined,
-              MessageTypes.GQL_CONNECTION_ACK,
+              MessageType.GQL_CONNECTION_ACK,
               undefined,
             );
 
@@ -285,7 +340,7 @@ export class SubscriptionServer {
               this.sendMessage(
                 connectionContext,
                 undefined,
-                MessageTypes.GQL_CONNECTION_KEEP_ALIVE,
+                MessageType.GQL_CONNECTION_KEEP_ALIVE,
                 undefined,
               );
             }
@@ -294,7 +349,7 @@ export class SubscriptionServer {
               connectionContext,
               opId,
               { message: error.message },
-              MessageTypes.GQL_CONNECTION_ERROR,
+              MessageType.GQL_CONNECTION_ERROR,
             );
 
             // Close the connection with an error code, ws v2 ensures that the
@@ -308,21 +363,22 @@ export class SubscriptionServer {
           });
           break;
 
-        case MessageTypes.GQL_CONNECTION_TERMINATE:
+        case MessageType.GQL_CONNECTION_TERMINATE:
           connectionContext.socket.close();
           break;
 
-        case MessageTypes.GQL_START:
+        case MessageType.GQL_START:
           connectionContext.initPromise.then((initResult) => {
             // if we already have a subscription with this id, unsubscribe from it first
             if (connectionContext.operations && connectionContext.operations[opId]) {
               this.unsubscribe(connectionContext, opId);
             }
+            const payload: OperationMessageQueryPayload = (<OperationMessageQueryPayload>parsedMessage.payload);
 
             const baseParams: ExecutionParams = {
-              query: parsedMessage.payload.query,
-              variables: parsedMessage.payload.variables,
-              operationName: parsedMessage.payload.operationName,
+              query: payload.query,
+              variables: payload.variables,
+              operationName: payload.operationName,
               context: Object.assign(
                 {},
                 isObject(initResult) ? initResult : {},
@@ -362,6 +418,8 @@ export class SubscriptionServer {
                 if (this.subscribe && isASubscriptionOperation(document, params.operationName)) {
                   executor = this.subscribe;
                 }
+
+                this.processFiles(connectionContext, opId, params.variables);
 
                 const promiseOrIterable = executor(this.schema,
                   document,
@@ -403,10 +461,10 @@ export class SubscriptionServer {
                     }
                   }
 
-                  this.sendMessage(connectionContext, opId, MessageTypes.GQL_DATA, result);
+                  this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
                 })
                 .then(() => {
-                  this.sendMessage(connectionContext, opId, MessageTypes.GQL_COMPLETE, null);
+                  this.sendMessage(connectionContext, opId, MessageType.GQL_COMPLETE, null);
                 })
                 .catch((e: Error) => {
                   let error = e;
@@ -433,10 +491,10 @@ export class SubscriptionServer {
             }).then(() => {
               // NOTE: This is a temporary code to support the legacy protocol.
               // As soon as the old protocol has been removed, this coode should also be removed.
-              this.sendMessage(connectionContext, opId, MessageTypes.SUBSCRIPTION_SUCCESS, undefined);
+       //       this.sendMessage(connectionContext, opId, MessageTypes.SUBSCRIPTION_SUCCESS, undefined);
             }).catch((e: any) => {
               if (e.errors) {
-                this.sendMessage(connectionContext, opId, MessageTypes.GQL_DATA, { errors: e.errors });
+                this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, { errors: e.errors });
               } else {
                 this.sendError(connectionContext, opId, { message: e.message });
               }
@@ -448,7 +506,23 @@ export class SubscriptionServer {
           });
           break;
 
-        case MessageTypes.GQL_STOP:
+        case MessageType.GQL_DATA:
+          connectionContext.initPromise.then(() => {
+            const payload: OperationMessageFilePayload = (<OperationMessageFilePayload>parsedMessage.payload);
+            const fileId = this.getFileId(opId, payload.fileId);
+            if (connectionContext.operations &&
+              connectionContext.operations[opId] &&
+              connectionContext.files[fileId]
+            ) {
+              connectionContext.files[fileId].next({
+                currentChunk: payload.currentChunk,
+                buffer: payload.buffer,
+              });
+            }
+          });
+          break;
+
+        case MessageType.GQL_STOP:
           connectionContext.initPromise.then(() => {
             // Find subscription id. Call unsubscribe.
             this.unsubscribe(connectionContext, opId);
@@ -461,24 +535,39 @@ export class SubscriptionServer {
     };
   }
 
-  private sendMessage(connectionContext: ConnectionContext, opId: string, type: string, payload: any): void {
-    const parsedMessage = parseLegacyProtocolMessage(connectionContext, {
-      type,
-      id: opId,
-      payload,
-    });
+  private buildMessage(id: number, type: number, payload: any): ArrayBuffer {
+    let serializedMessage: string = JSON.stringify(payload) || '';
 
-    if (parsedMessage && connectionContext.socket.readyState === WebSocket.OPEN) {
-      connectionContext.socket.send(JSON.stringify(parsedMessage));
+    /*
+    const Message = StructType({
+      id: ref.types.uint32,
+      type: ref.types.uint32,
+      payload: ref.types.CString,
+    });
+     */
+    const headerSize = 4 * 2;
+
+    const message = new DataView(new ArrayBuffer(headerSize + serializedMessage.length));
+    message.setUint32(0, id, true);
+    message.setUint32(4, type, true);
+    new Uint8Array(message.buffer).set(Buffer.from(serializedMessage), 8);
+    return message.buffer;
+  }
+
+  private sendMessage(connectionContext: ConnectionContext, opId: number, type: number, payload: any): void {
+    const message = this.buildMessage(opId, type, payload);
+
+    if (connectionContext.socket.readyState === WebSocket.OPEN) {
+      connectionContext.socket.send(message);
     }
   }
 
-  private sendError(connectionContext: ConnectionContext, opId: string, errorPayload: any,
-                    overrideDefaultErrorType?: string): void {
-    const sanitizedOverrideDefaultErrorType = overrideDefaultErrorType || MessageTypes.GQL_ERROR;
+  private sendError(connectionContext: ConnectionContext, opId: number, errorPayload: any,
+                    overrideDefaultErrorType?: number): void {
+    const sanitizedOverrideDefaultErrorType = overrideDefaultErrorType || MessageType.GQL_ERROR;
     if ([
-        MessageTypes.GQL_CONNECTION_ERROR,
-        MessageTypes.GQL_ERROR,
+        MessageType.GQL_CONNECTION_ERROR,
+        MessageType.GQL_ERROR,
       ].indexOf(sanitizedOverrideDefaultErrorType) === -1) {
       throw new Error('overrideDefaultErrorType should be one of the allowed error messages' +
         ' GQL_CONNECTION_ERROR or GQL_ERROR');

@@ -17,6 +17,6 @@ stat('dist', function(error, stat) {
             return;
         }
 
-        exec('npm run compile && npm run browser-compile && rimraf src');
+        exec('npm run compile && npm run browser-compile');
     }
 });

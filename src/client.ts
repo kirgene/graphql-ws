@@ -14,7 +14,7 @@ import $$observable from 'symbol-observable';
 
 import { GRAPHQL_WS } from './protocol';
 import { WS_TIMEOUT } from './defaults';
-import MessageTypes from './message-types';
+import { MessageType } from './message-type';
 
 export interface Observer<T> {
   next?: (value: T) => void;
@@ -45,7 +45,7 @@ export interface Operation {
 }
 
 export interface Operations {
-  [id: string]: Operation;
+  [id: number]: Operation;
 }
 
 export interface Middleware {
@@ -65,6 +65,18 @@ export interface ClientOptions {
   reconnectionAttempts?: number;
   connectionCallback?: (error: Error[], result?: any) => void;
   lazy?: boolean;
+}
+
+export class File11 {
+  private filename: string;
+
+  constructor(filename: string) {
+    this.filename = filename;
+  }
+
+  private read(): any {
+    return null;
+  }
 }
 
 export class SubscriptionClient {
@@ -147,7 +159,7 @@ export class SubscriptionClient {
         this.clearMaxConnectTimeout();
         this.clearTryReconnectTimeout();
         this.unsubscribeAll();
-        this.sendMessage(undefined, MessageTypes.GQL_CONNECTION_TERMINATE, null);
+        this.sendMessage(undefined, MessageType.GQL_CONNECTION_TERMINATE, null);
       }
 
       this.client.close();
@@ -165,7 +177,7 @@ export class SubscriptionClient {
     const executeOperation = this.executeOperation.bind(this);
     const unsubscribe = this.unsubscribe.bind(this);
 
-    let opId: string;
+    let opId: number;
 
     return {
       [$$observable]() {
@@ -236,7 +248,7 @@ export class SubscriptionClient {
 
   public unsubscribeAll() {
     Object.keys(this.operations).forEach( subId => {
-      this.unsubscribe(subId);
+      this.unsubscribe(parseInt(subId, 10));
     });
   }
 
@@ -276,7 +288,7 @@ export class SubscriptionClient {
     return this;
   }
 
-  private executeOperation(options: OperationOptions, handler: (error: Error[], result?: any) => void): string {
+  private executeOperation(options: OperationOptions, handler: (error: Error[], result?: any) => void): number {
     if (this.client === null) {
       this.connect();
     }
@@ -287,9 +299,12 @@ export class SubscriptionClient {
     this.applyMiddlewares(options)
       .then(processedOptions => {
         this.checkOperationOptions(processedOptions, handler);
+        const files = this.extractFiles(processedOptions);
         if (this.operations[opId]) {
           this.operations[opId] = { options: processedOptions, handler };
-          this.sendMessage(opId, MessageTypes.GQL_START, processedOptions);
+
+          this.sendMessage(opId, MessageType.GQL_START, processedOptions);
+          this.sendFiles(opId, files);
         }
       })
       .catch(error => {
@@ -369,19 +384,119 @@ export class SubscriptionClient {
     }
   }
 
-  private buildMessage(id: string, type: string, payload: any) {
-    const payloadToReturn = payload && payload.query ?
-      {
-        ...payload,
-        query: typeof payload.query === 'string' ? payload.query : print(payload.query),
-      } :
-      payload;
+  private sendSingleFile(opId: number, fileInfo: any) {
+    const { id, file, chunkSize, chunks } = fileInfo;
+    let currentChunk = 1;
 
-    return {
-      id,
-      type,
-      payload: payloadToReturn,
+    const headerSize = 4 * 5;
+/*
+    const Message = Struct({
+      id: Struct.Uint32,
+      type: Struct.Uint32,
+      fileId: Struct.Uint32,
+      seq: Struct.Uint32,
+      total: Struct.Uint32,
+      payload: ...,
+    });
+    */
+
+    const fr = new FileReader();
+
+    fr.onload = (e: any) => {
+      const chunk: ArrayBuffer = e.target.result;
+      const message = new DataView(new ArrayBuffer(headerSize + chunk.byteLength));
+      message.setUint32(0, opId, true);
+      message.setUint32(4, MessageType.GQL_DATA, true);
+      message.setUint32(8, id, true);
+      message.setUint32(12, currentChunk, true);
+      message.setUint32(16, chunks, true);
+      new Uint8Array(message.buffer).set(chunk, 20);
+
+      this.sendMessageRaw(message.buffer);
+      if (currentChunk < chunks) {
+        const start = currentChunk * chunkSize;
+        const end = ((start + chunkSize) >= file.size) ? file.size : start + chunkSize;
+        fr.readAsArrayBuffer(file.slice(start, end));
+        currentChunk++;
+      }
     };
+    fr.onerror = (e: any) => {
+      // postMessage({name:f.name, md5:e.message});
+    };
+    // kick off the reading of the file
+    fr.readAsArrayBuffer(file.slice(0, chunkSize));
+  }
+
+  private sendFiles(id: number, files: any) {
+    files.forEach((f: any) => this.sendSingleFile(id, f));
+  }
+
+  private extractFiles(options: OperationOptions) {
+    const chunkSize = 100 * 1024 * 1024; // 100KB
+    const { variables } = options;
+    if (!variables) { return []; }
+    let fileId = 0;
+    const files = [];
+    for (let k of Object.keys(variables)) {
+      if ((<any>variables)[k] instanceof File) {
+        fileId++;
+        const file = (<any>variables)[k];
+        const chunks = Math.ceil(file.size / chunkSize);
+        files.push({
+          id: fileId,
+          file,
+          chunks,
+          chunkSize,
+        });
+        const info = {
+          ___file: true,
+          id: fileId,
+          name: (<any>variables)[k].name,
+          chunks,
+        };
+        (<any>variables)[k] = info;
+      }
+    }
+    return files;
+  }
+
+  private buildMessage(id: number, type: number, payload: any): ArrayBuffer {
+    let serializedMessage: string;
+
+    if (payload) {
+      const payloadToReturn = payload && payload.query ?
+        {
+          ...payload,
+          query: typeof payload.query === 'string' ? payload.query : print(payload.query),
+        } :
+        payload;
+      serializedMessage = JSON.stringify(payloadToReturn);
+      let parsedMessage: any;
+      try {
+        parsedMessage = JSON.parse(serializedMessage);
+      } catch (e) {
+        throw new Error(`Message must be JSON-serializable. Got: ${payloadToReturn}`);
+      }
+    } else {
+      serializedMessage = '';
+    }
+
+    const enc = new TextEncoder('utf-8');
+
+    /*
+    const Message = StructType({
+      id: ref.types.uint32,
+      type: ref.types.uint32,
+      payload: ref.types.CString,
+    });
+     */
+    const headerSize = 4 * 2;
+
+    const message = new DataView(new ArrayBuffer(headerSize + serializedMessage.length));
+    message.setUint32(0, id, true);
+    message.setUint32(4, type, true);
+    new Uint8Array(message.buffer).set(enc.encode(serializedMessage), 8);
+    return message.buffer;
   }
 
   // ensure we have an array of errors
@@ -407,38 +522,31 @@ export class SubscriptionClient {
     }];
   }
 
-  private sendMessage(id: string, type: string, payload: any) {
+  private sendMessage(id: number, type: number, payload: any) {
     this.sendMessageRaw(this.buildMessage(id, type, payload));
   }
 
   // send message, or queue it if connection is not open
-  private sendMessageRaw(message: Object) {
+  private sendMessageRaw(message: ArrayBuffer) {
     switch (this.status) {
       case this.wsImpl.OPEN:
-        let serializedMessage: string = JSON.stringify(message);
-        let parsedMessage: any;
-        try {
-          parsedMessage = JSON.parse(serializedMessage);
-        } catch (e) {
-          throw new Error(`Message must be JSON-serializable. Got: ${message}`);
-        }
-
-        this.client.send(serializedMessage);
+        this.client.send(message);
         break;
       case this.wsImpl.CONNECTING:
         this.unsentMessagesQueue.push(message);
-
         break;
       default:
         if (!this.reconnecting) {
-          throw new Error('A message was not sent because socket is not connected, is closing or ' +
-            'is already closed. Message was: ' + JSON.stringify(message));
+          throw new Error(
+            'A message was not sent because socket is not connected, is closing or ' +
+            'is already closed. ',
+          );
         }
     }
   }
 
-  private generateOperationId(): string {
-    return String(++this.nextOperationId);
+  private generateOperationId(): number {
+    return ++this.nextOperationId;
   }
 
   private tryReconnect() {
@@ -448,8 +556,9 @@ export class SubscriptionClient {
 
     if (!this.reconnecting) {
       Object.keys(this.operations).forEach((key) => {
+        const opId = parseInt(key, 10);
         this.unsentMessagesQueue.push(
-          this.buildMessage(key, MessageTypes.GQL_START, this.operations[key].options),
+          this.buildMessage(opId, MessageType.GQL_START, this.operations[opId].options),
         );
       });
       this.reconnecting = true;
@@ -494,6 +603,7 @@ export class SubscriptionClient {
 
   private connect() {
     this.client = new this.wsImpl(this.url, GRAPHQL_WS);
+    this.client.binaryType = 'arraybuffer';
 
     this.checkMaxConnectTimeout();
 
@@ -505,7 +615,7 @@ export class SubscriptionClient {
       const payload: ConnectionParams = typeof this.connectionParams === 'function' ? this.connectionParams() : this.connectionParams;
 
       // Send CONNECTION_INIT message, no need to wait for connection to success (reduce roundtrips)
-      this.sendMessage(undefined, MessageTypes.GQL_CONNECTION_INIT, payload);
+      this.sendMessage(undefined, MessageType.GQL_CONNECTION_INIT, payload);
       this.flushUnsentMessagesQueue();
     };
 
@@ -525,21 +635,40 @@ export class SubscriptionClient {
     };
   }
 
-  private processReceivedData(receivedData: any) {
-    let parsedMessage: any;
-    let opId: string;
-
-    try {
-      parsedMessage = JSON.parse(receivedData);
-      opId = parsedMessage.id;
-    } catch (e) {
-      throw new Error(`Message must be JSON-parseable. Got: ${receivedData}`);
+  private parseMessage(buffer: any) {
+    const message = new DataView(buffer);
+    let result;
+    let base = {
+      id: message.getUint32(0, true),
+      type: message.getUint32(4, true),
+    };
+    if (base.type === MessageType.GQL_DATA && false) {
+      result = {
+        ...base,
+        fileId: message.getUint32(8, true),
+        currentChunk: message.getUint32(12, true),
+        chunks: message.getUint32(16, true),
+        payload: buffer.slice(20),
+      };
+    } else {
+      const dec = new TextDecoder('utf-8');
+      let payload = dec.decode(buffer.slice(8));
+      result = {
+        ...base,
+        payload: payload.length ? JSON.parse(payload) : null,
+      };
     }
+    return result;
+  }
+
+  private processReceivedData(receivedData: any) {
+    const parsedMessage = this.parseMessage(receivedData);
+    const opId = parsedMessage.id;
 
     if (
-      [ MessageTypes.GQL_DATA,
-        MessageTypes.GQL_COMPLETE,
-        MessageTypes.GQL_ERROR,
+      [ MessageType.GQL_DATA,
+        MessageType.GQL_COMPLETE,
+        MessageType.GQL_ERROR,
       ].indexOf(parsedMessage.type) !== -1 && !this.operations[opId]
     ) {
       this.unsubscribe(opId);
@@ -548,13 +677,13 @@ export class SubscriptionClient {
     }
 
     switch (parsedMessage.type) {
-      case MessageTypes.GQL_CONNECTION_ERROR:
+      case MessageType.GQL_CONNECTION_ERROR:
         if (this.connectionCallback) {
           this.connectionCallback(parsedMessage.payload);
         }
         break;
 
-      case MessageTypes.GQL_CONNECTION_ACK:
+      case MessageType.GQL_CONNECTION_ACK:
         this.eventEmitter.emit(this.reconnecting ? 'reconnected' : 'connected');
         this.reconnecting = false;
         this.backoff.reset();
@@ -565,23 +694,23 @@ export class SubscriptionClient {
         }
         break;
 
-      case MessageTypes.GQL_COMPLETE:
+      case MessageType.GQL_COMPLETE:
         this.operations[opId].handler(null, null);
         delete this.operations[opId];
         break;
 
-      case MessageTypes.GQL_ERROR:
+      case MessageType.GQL_ERROR:
         this.operations[opId].handler(this.formatErrors(parsedMessage.payload), null);
         delete this.operations[opId];
         break;
 
-      case MessageTypes.GQL_DATA:
+      case MessageType.GQL_DATA:
         const parsedPayload = !parsedMessage.payload.errors ?
           parsedMessage.payload : {...parsedMessage.payload, errors: this.formatErrors(parsedMessage.payload.errors)};
         this.operations[opId].handler(null, parsedPayload);
         break;
 
-      case MessageTypes.GQL_CONNECTION_KEEP_ALIVE:
+      case MessageType.GQL_CONNECTION_KEEP_ALIVE:
         const firstKA = typeof this.wasKeepAliveReceived === 'undefined';
         this.wasKeepAliveReceived = true;
 
@@ -601,10 +730,10 @@ export class SubscriptionClient {
     }
   }
 
-  private unsubscribe(opId: string) {
+  private unsubscribe(opId: number) {
     if (this.operations[opId]) {
       delete this.operations[opId];
-      this.sendMessage(opId, MessageTypes.GQL_STOP, undefined);
+      this.sendMessage(opId, MessageType.GQL_STOP, undefined);
     }
   }
 }
