@@ -256,7 +256,7 @@ export class SubscriptionServer {
       id: message.getUint32(0, true),
       type: message.getUint32(4, true),
     };
-    if (payloadBase.type === MessageType.GQL_DATA) {
+    if (payloadBase.type === MessageType.GQL_FILE) {
       const payload: OperationMessageFilePayload = {
         fileId: message.getUint32(8, true),
         currentChunk: message.getUint32(12, true),
@@ -506,7 +506,7 @@ export class SubscriptionServer {
           });
           break;
 
-        case MessageType.GQL_DATA:
+        case MessageType.GQL_FILE:
           connectionContext.initPromise.then(() => {
             const payload: OperationMessageFilePayload = (<OperationMessageFilePayload>parsedMessage.payload);
             const fileId = this.getFileId(opId, payload.fileId);

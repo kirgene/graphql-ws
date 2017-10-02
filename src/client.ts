@@ -406,7 +406,7 @@ export class SubscriptionClient {
       const chunk: ArrayBuffer = e.target.result;
       const message = new DataView(new ArrayBuffer(headerSize + chunk.byteLength));
       message.setUint32(0, opId, true);
-      message.setUint32(4, MessageType.GQL_DATA, true);
+      message.setUint32(4, MessageType.GQL_FILE, true);
       message.setUint32(8, id, true);
       message.setUint32(12, currentChunk, true);
       message.setUint32(16, chunks, true);
@@ -432,7 +432,7 @@ export class SubscriptionClient {
   }
 
   private extractFiles(options: OperationOptions) {
-    const chunkSize = 100 * 1024 * 1024; // 100KB
+    const chunkSize = 100 * 1024; // 100KB
     const { variables } = options;
     if (!variables) { return []; }
     let fileId = 0;
@@ -642,7 +642,7 @@ export class SubscriptionClient {
       id: message.getUint32(0, true),
       type: message.getUint32(4, true),
     };
-    if (base.type === MessageType.GQL_DATA && false) {
+    if (base.type === MessageType.GQL_FILE) {
       result = {
         ...base,
         fileId: message.getUint32(8, true),

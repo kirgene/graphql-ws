@@ -7,7 +7,8 @@ export enum MessageType {
   GQL_CONNECTION_KEEP_ALIVE, // Server -> Client
   GQL_CONNECTION_TERMINATE, // Client -> Server
   GQL_START, // Client -> Server
-  GQL_DATA, // Server <-> Client
+  GQL_DATA, // Server -> Client
+  GQL_FILE, // Server <-> Client
   GQL_ERROR, // Server -> Client
   GQL_COMPLETE, // Server -> Client
   GQL_STOP, // Client -> Server

@@ -1101,7 +1101,7 @@ describe('Client', function () {
 
   it('should delete operation when receive a GQL_COMPLETE', (done) => {
     const subscriptionsClient = new SubscriptionClient(`ws://localhost:${RAW_TEST_PORT}/`);
-    subscriptionsClient.operations['1'] = {
+    subscriptionsClient.operations[1] = {
       options: {
         query: 'invalid',
       },
