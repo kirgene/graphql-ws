@@ -1,7 +1,7 @@
 import * as WebSocket from 'ws';
 
 import { MessageType } from './message-type';
-import { GRAPHQL_WS, GRAPHQL_SUBSCRIPTIONS } from './protocol';
+import { GRAPHQL_WS } from './protocol';
 import isObject = require('lodash.isobject');
 import {
   parse,
@@ -38,7 +38,13 @@ export type ConnectionContext = {
   isLegacy: boolean,
   socket: WebSocket,
   files: {
-    [id: string]: any,
+    [id: number]: {
+      [id: number]: {
+        size: number,
+        received: number,
+        writer: any,
+      }
+    },
   }
   operations: {
     [opId: number]: ExecutionIterator,
@@ -54,8 +60,6 @@ export interface OperationMessageQueryPayload {
 
 export interface OperationMessageFilePayload {
   fileId: number;
-  currentChunk: number;
-  chunks: number;
   buffer: ArrayBuffer;
 }
 
@@ -141,9 +145,8 @@ export class SubscriptionServer {
       // See: https://github.com/websockets/ws/pull/1099
       (socket as any).upgradeReq = request;
       (socket as any).binaryType = 'arraybuffer';
-      // NOTE: the old GRAPHQL_SUBSCRIPTIONS protocol support should be removed in the future
       if (socket.protocol === undefined ||
-        (socket.protocol.indexOf(GRAPHQL_WS) === -1 && socket.protocol.indexOf(GRAPHQL_SUBSCRIPTIONS) === -1)) {
+        (socket.protocol.indexOf(GRAPHQL_WS) === -1)) {
         // Close the connection with an error code, ws v2 ensures that the
         // connection is cleaned up even when the closing handshake fails.
         // 1002: protocol error
@@ -236,6 +239,7 @@ export class SubscriptionServer {
       }
 
       delete connectionContext.operations[opId];
+      delete connectionContext.files[opId];
 
       if (this.onOperationComplete) {
         this.onOperationComplete(connectionContext.socket, opId);
@@ -259,9 +263,7 @@ export class SubscriptionServer {
     if (payloadBase.type === MessageType.GQL_FILE) {
       const payload: OperationMessageFilePayload = {
         fileId: message.getUint32(8, true),
-        currentChunk: message.getUint32(12, true),
-        chunks: message.getUint32(16, true),
-        buffer: buffer.slice(20),
+        buffer: buffer.slice(12),
       };
       result = {
         ...payloadBase,
@@ -277,20 +279,21 @@ export class SubscriptionServer {
     return result;
   }
 
-  private getFileId(opId: number, fileId: number): string {
-    return `${opId}-${fileId}`;
-  }
-
   private processFiles(connectionContext: ConnectionContext, opId: number, variables: Object) {
     for (let k of Object.keys(variables)) {
       const val = (<any>variables)[k];
       if (val.hasOwnProperty('___file')) {
-        const fileId = this.getFileId(opId, val.id);
-        connectionContext.files[fileId] = new Subject();
+        connectionContext.files[opId] = {};
+        const writer = new Subject();
+        connectionContext.files[opId][val.id] = {
+          writer,
+          size: val.size,
+          received: 0,
+        };
         (<any>variables)[k] = {
           name : val.name,
-          file: connectionContext.files[fileId],
-          chunks: val.chunks,
+          file: writer,
+          size: val.size,
         };
       }
     }
@@ -465,6 +468,7 @@ export class SubscriptionServer {
                 })
                 .then(() => {
                   this.sendMessage(connectionContext, opId, MessageType.GQL_COMPLETE, null);
+                  this.unsubscribe(connectionContext, opId);
                 })
                 .catch((e: Error) => {
                   let error = e;
@@ -509,15 +513,19 @@ export class SubscriptionServer {
         case MessageType.GQL_FILE:
           connectionContext.initPromise.then(() => {
             const payload: OperationMessageFilePayload = (<OperationMessageFilePayload>parsedMessage.payload);
-            const fileId = this.getFileId(opId, payload.fileId);
             if (connectionContext.operations &&
               connectionContext.operations[opId] &&
-              connectionContext.files[fileId]
+              connectionContext.files[opId] &&
+              connectionContext.files[opId][payload.fileId]
             ) {
-              connectionContext.files[fileId].next({
-                currentChunk: payload.currentChunk,
-                buffer: payload.buffer,
-              });
+              const f = connectionContext.files[opId][payload.fileId];
+              f.writer.next(payload.buffer);
+              f.received += payload.buffer.byteLength;
+              if (f.received === f.size) {
+                f.writer.complete();
+              } else if (f.received > f.size) {
+                console.log('BUG: Received file size is greater than original size!!!');
+              }
             }
           });
           break;

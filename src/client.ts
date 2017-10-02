@@ -385,17 +385,19 @@ export class SubscriptionClient {
   }
 
   private sendSingleFile(opId: number, fileInfo: any) {
-    const { id, file, chunkSize, chunks } = fileInfo;
+    const { id, file } = fileInfo;
+    const chunkSize = 100 * 1024; // 100KB
+    const chunks = Math.ceil(file.size / chunkSize);
     let currentChunk = 1;
 
-    const headerSize = 4 * 5;
+    const headerSize = 4 * 3;
 /*
     const Message = Struct({
       id: Struct.Uint32,
       type: Struct.Uint32,
       fileId: Struct.Uint32,
-      seq: Struct.Uint32,
-      total: Struct.Uint32,
+     // seq: Struct.Uint32,
+     // total: Struct.Uint32,
       payload: ...,
     });
     */
@@ -408,9 +410,7 @@ export class SubscriptionClient {
       message.setUint32(0, opId, true);
       message.setUint32(4, MessageType.GQL_FILE, true);
       message.setUint32(8, id, true);
-      message.setUint32(12, currentChunk, true);
-      message.setUint32(16, chunks, true);
-      new Uint8Array(message.buffer).set(chunk, 20);
+      new Uint8Array(message.buffer).set(chunk, 12);
 
       this.sendMessageRaw(message.buffer);
       if (currentChunk < chunks) {
@@ -419,9 +419,6 @@ export class SubscriptionClient {
         fr.readAsArrayBuffer(file.slice(start, end));
         currentChunk++;
       }
-    };
-    fr.onerror = (e: any) => {
-      // postMessage({name:f.name, md5:e.message});
     };
     // kick off the reading of the file
     fr.readAsArrayBuffer(file.slice(0, chunkSize));
@@ -432,7 +429,6 @@ export class SubscriptionClient {
   }
 
   private extractFiles(options: OperationOptions) {
-    const chunkSize = 100 * 1024; // 100KB
     const { variables } = options;
     if (!variables) { return []; }
     let fileId = 0;
@@ -441,18 +437,15 @@ export class SubscriptionClient {
       if ((<any>variables)[k] instanceof File) {
         fileId++;
         const file = (<any>variables)[k];
-        const chunks = Math.ceil(file.size / chunkSize);
         files.push({
           id: fileId,
           file,
-          chunks,
-          chunkSize,
         });
         const info = {
           ___file: true,
           id: fileId,
           name: (<any>variables)[k].name,
-          chunks,
+          size: file.size,
         };
         (<any>variables)[k] = info;
       }

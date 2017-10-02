@@ -1,12 +1,12 @@
 {
-  "name": "subscriptions-transport-ws",
-  "version": "0.9.0",
-  "description": "A websocket transport for GraphQL subscriptions",
+  "name": "graphql-ws",
+  "version": "0.1.0",
+  "description": "WebSocket transport for GraphQL",
   "main": "dist/index.js",
   "browser": "dist/client.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/apollostack/subscriptions-transport-ws.git"
+    "url": ""
   },
   "dependencies": {
     "@types/ref": "0.0.28",

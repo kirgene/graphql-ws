@@ -1,28 +1,21 @@
-[![npm version](https://badge.fury.io/js/subscriptions-transport-ws.svg)](https://badge.fury.io/js/subscriptions-transport-ws) [![GitHub license](https://img.shields.io/github/license/apollostack/subscriptions-transport-ws.svg)](https://github.com/apollostack/subscriptions-transport-ws/blob/license/LICENSE)
-
-# subscriptions-transport-ws
+# graphql-ws
 
 **(Work in progress!)**
 
-A GraphQL WebSocket server and client to facilitate GraphQL queries, mutations and subscriptions over WebSocket.
+fork of [subscriptions-transport-ws](https://github.com/apollographql/subscriptions-transport-ws) which adds file transfer over websocket.
 
-> `subscriptions-transport-ws` is an extension for GraphQL, and you can use it with any GraphQL client and server (not only Apollo).
+A GraphQL WebSocket server and client to facilitate GraphQL queries, mutations and subscriptions over WebSocket.
 
 See [GitHunt-API](https://github.com/apollostack/GitHunt-API) and [GitHunt-React](https://github.com/apollostack/GitHunt-React) for an example server and client integration.
 
 # Getting Started
 
-Start by installing the package, using Yarn or NPM.
+Start by installing the package, using NPM.
 
-    Using Yarn:
-    $ yarn add subscriptions-transport-ws
-
-    Or, using NPM:
-    $ npm install --save subscriptions-transport-ws
+    Using NPM:
+    $ npm install --save graphql-ws
 
 > Note that you need to use this package on both GraphQL client and server.
-
-> This command also installs this package's dependencies, including `graphql-subscriptions`.
 
 ## Server
 
@@ -38,7 +31,7 @@ Now, create `SubscriptionServer` instance, with your GraphQL `schema`, `execute`
 
 ```js
 import { createServer } from 'http';
-import { SubscriptionServer } from 'subscriptions-transport-ws';
+import { SubscriptionServer } from 'graphql-ws';
 import { execute, subscribe } from 'graphql';
 import { schema } from './my-schema';
 
@@ -85,7 +78,7 @@ To start with a full WebSocket transport, that handles all types of GraphQL oper
 Then, create your `ApolloClient` instance and use the `SubscriptionsClient` instance as network interface:
 
 ```js
-import { SubscriptionClient } from 'subscriptions-transport-ws';
+import { SubscriptionClient } from 'graphql-ws';
 import ApolloClient from 'apollo-client';
 
 const GRAPHQL_ENDPOINT = 'ws://localhost:3000/graphql';
@@ -98,39 +91,6 @@ const apolloClient = new ApolloClient({
     networkInterface: client,
 });
 
-```
-
-### Hybrid WebSocket Transport
-
-To start with a hybrid WebSocket transport, that handles only `subscription`s over WebSocket, create your `SubscriptionClient` and a regular HTTP network interface, then extend your network interface to use the WebSocket client for GraphQL subscriptions:
-
-```js
-import {SubscriptionClient, addGraphQLSubscriptions} from 'subscriptions-transport-ws';
-import ApolloClient, {createNetworkInterface} from 'apollo-client';
-
-// Create regular NetworkInterface by using apollo-client's API:
-const networkInterface = createNetworkInterface({
- uri: 'http://localhost:3000' // Your GraphQL endpoint
-});
-
-// Create WebSocket client
-const wsClient = new SubscriptionClient(`ws://localhost:5000/`, {
-    reconnect: true,
-    connectionParams: {
-        // Pass any arguments you want for initialization
-    }
-});
-
-// Extend the network interface with the WebSocket
-const networkInterfaceWithSubscriptions = addGraphQLSubscriptions(
-    networkInterface,
-    wsClient
-);
-
-// Finally, create your ApolloClient instance with the modified network interface
-const apolloClient = new ApolloClient({
-    networkInterface: networkInterfaceWithSubscriptions
-});
 ```
 
 Now, when you want to use subscriptions in client side, use your `ApolloClient` instance, with [`subscribe`](http://dev.apollodata.com/core/apollo-client-api.html#ObservableQuery\.subscribe) or `query` [`subscribeToMore`](http://dev.apollodata.com/react/subscriptions.html#subscribe-to-more):
@@ -173,7 +133,7 @@ apolloClient.query({
 If you don't use any package/modules loader, you can still use this package, by using `unpkg` service, and get the client side package from:
 
 ```
-https://unpkg.com/subscriptions-transport-ws@VERSION/browser/client.js
+https://unpkg.com/graphql-ws@VERSION/browser/client.js
 ```
 
 > Replace VERSION with the latest version of the package.
@@ -197,8 +157,8 @@ app.use('/graphiql', graphiqlExpress({
 If you are using older version, or another GraphQL server, start by modifying GraphiQL static HTML, and add this package and it's fetcher from CDN:
 
 ```html
-    <script src="//unpkg.com/subscriptions-transport-ws@0.5.4/browser/client.js"></script>
-    <script src="//unpkg.com/graphiql-subscriptions-fetcher@0.0.2/browser/client.js"></script>
+    <script src="//unpkg.com/graphql-ws@0.1.0/browser/client.js"></script>
+    <script src="//unpkg.com/graphiql-ws@0.1.0/browser/client.js"></script>
 ```
 
 Then, create `SubscriptionClient` and define the fetcher:
@@ -317,7 +277,3 @@ ReactDOM.render(
 
 * For GraphQL WebSocket protocol docs, [click here](https://github.com/apollographql/subscriptions-transport-ws/blob/master/PROTOCOL.md)    
 * This package also uses `AsyncIterator` internally using [iterall](https://github.com/leebyron/iterall), for more information [click here](https://github.com/ReactiveX/IxJS), or [the proposal](https://github.com/tc39/proposal-async-iteration)
-
-The current version of this transport, also support a previous version of the protocol.
-
-[You can find the old protocol docs here](https://github.com/apollographql/subscriptions-transport-ws/blob/cacb8692f3601344a4101d802443d046d73f8b23/README.md#client-server-communication)
