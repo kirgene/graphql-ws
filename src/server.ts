@@ -35,7 +35,6 @@ export interface ExecutionParams<TContext = any> {
 
 export type ConnectionContext = {
   initPromise?: Promise<any>,
-  isLegacy: boolean,
   socket: WebSocket,
   files: {
     [id: number]: {
@@ -43,7 +42,7 @@ export type ConnectionContext = {
         size: number,
         received: number,
         writer: any,
-      }
+      },
     },
   }
   operations: {
@@ -156,7 +155,6 @@ export class SubscriptionServer {
       }
 
       const connectionContext: ConnectionContext = Object.create(null);
-      connectionContext.isLegacy = false;
       connectionContext.socket = socket;
       connectionContext.operations = {};
       connectionContext.files = {};
@@ -270,7 +268,8 @@ export class SubscriptionServer {
         payload,
       };
     } else {
-      const payload: OperationMessageQueryPayload = JSON.parse(Buffer.from(buffer, 8).toString());
+      const payloadStr = Buffer.from(buffer, 8).toString();
+      const payload: OperationMessageQueryPayload = payloadStr.length > 0 ? JSON.parse(payloadStr) : null;
       result = {
         ...payloadBase,
         payload,
@@ -280,7 +279,7 @@ export class SubscriptionServer {
   }
 
   private processFiles(connectionContext: ConnectionContext, opId: number, variables: Object) {
-    for (let k of Object.keys(variables)) {
+    for (let k of Object.keys(variables || {})) {
       const val = (<any>variables)[k];
       if (val.hasOwnProperty('___file')) {
         connectionContext.files[opId] = {};

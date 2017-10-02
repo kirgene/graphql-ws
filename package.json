@@ -9,8 +9,6 @@
     "url": ""
   },
   "dependencies": {
-    "@types/ref": "0.0.28",
-    "@types/ref-struct": "0.0.28",
     "backo2": "^1.0.2",
     "eventemitter3": "^2.0.3",
     "iterall": "^1.1.1",
@@ -32,11 +30,11 @@
     "coverage": "node ./node_modules/istanbul/lib/cli.js cover _mocha -- --full-trace ./dist/test/tests.js",
     "postcoverage": "remap-istanbul --input coverage/coverage.raw.json --type lcovonly --output coverage/lcov.info",
     "browser-compile": "webpack --config \"./unpkg-webpack.config.js\"",
-    "prepublishOnly": "npm run compile && npm run browser-compile && rimraf src",
+    "prepublishOnly": "npm run compile && npm run browser-compile",
     "postinstall": "node scripts/post-install.js"
   },
   "peerDependencies": {
-    "graphql": "^0.10.0 || ^0.11.0"
+    "graphql": "^0.11.0"
   },
   "devDependencies": {
     "@types/chai": "^4.0.0",
