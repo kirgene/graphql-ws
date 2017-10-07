@@ -13,7 +13,6 @@ const resolvers = {
       return (value instanceof Binary) ? value : null;
     },
     parseValue(value) {
-      console.log('parseValue');
       return (value instanceof Binary) ? value : null;
     },
     parseLiteral(ast) {
