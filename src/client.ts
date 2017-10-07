@@ -13,7 +13,6 @@ import { print } from 'graphql/language/printer';
 import { DocumentNode } from 'graphql/language/ast';
 import { getOperationAST } from 'graphql/utilities/getOperationAST';
 import $$observable from 'symbol-observable';
-import * as sha256 from 'fast-sha256';
 
 import { GRAPHQL_WS } from './protocol';
 import { WS_TIMEOUT } from './defaults';
@@ -21,7 +20,7 @@ import { MessageType } from './message-type';
 import {Binary, DataFunction, CompleteFunction, SerializedBinary} from './types/Binary';
 import {
   BINARY_CHUNK_SIZE, deserializeBinaries, FilePayload, FileRequestPayload, findBinaries,
-  IncomingFile
+  IncomingFile,
 } from './common';
 
 export { Binary };
@@ -110,14 +109,6 @@ export class SubscriptionClient {
   private maxConnectTimeoutId: any;
   private middlewares: Middleware[];
   private maxConnectTimeGenerator: any;
-
-  private static arrayToBase64(array: Uint8Array): string {
-    return window.btoa(String.fromCharCode(...new window.Uint8Array(array)));
-  }
-
-  private static base64ToArray(base64: string): ArrayBuffer {
-    return window.Uint8Array.from(window.atob(base64), (c: String) => c.charCodeAt(0)).buffer;
-  }
 
   constructor(url: string, options?: ClientOptions, webSocketImpl?: any) {
     const {
@@ -412,7 +403,7 @@ export class SubscriptionClient {
     buffer.setUint32(4, MessageType.GQL_BINARY, true);
     buffer.setUint32(8, file.getId(), true);
 
-    file.startRead(offset);
+    file.initRead(offset);
     let read: number;
     do {
       read = await file.readInto(buffer.buffer, chunkSize, headerSize);
@@ -425,32 +416,10 @@ export class SubscriptionClient {
     this.sendMessageRaw(buffer.buffer.slice(0, headerSize)); // EOS
   }
 
-  private async calcBinaryHash(file: Binary) {
-    // TODO: Use web worker (see below comment block)
-    const hash = new sha256.Hash();
-    file.startRead();
-    const buffer = new ArrayBuffer(BINARY_CHUNK_SIZE);
-    let read: number;
-    do {
-      read = await file.readInto(buffer, BINARY_CHUNK_SIZE);
-      hash.update(new Uint8Array(buffer, 0, read));
-    } while (read === BINARY_CHUNK_SIZE);
-    file.setHash(SubscriptionClient.arrayToBase64(hash.digest()));
-
-    /*
-    return new Promise((resolve, reject) => {
-      const worker = new Worker('CalcMD5Worker.js');
-      worker.postMessage([f]);
-      worker.onmessage = (e) => resolve(e.data.md5);
-      worker.onerror = reject;
-    });
-    */
-  }
-
   private async extractFiles(variables?: { [key: string]: any }): Promise<Binary[]> {
     const files: Binary[] = [];
     for (let file of findBinaries(variables || {})) {
-      await this.calcBinaryHash(file);
+      await file.initMetadata();
       const found = files.find(f => f.equal(file));
       if (found) {
         file.clone(found);
@@ -480,7 +449,7 @@ export class SubscriptionClient {
   private processFiles(opId: number, response?: { [key: string]: any }) {
     deserializeBinaries(response || {}, (file) => {
       const obj = { opId, fileId: file.id };
-      const binary = new Binary(obj, this.binaryReader.bind(this), file);
+      const binary = new Binary(obj, { onRead: this.binaryReader.bind(this) }, file);
       const found = this.filesIn[opId].find(f => f.binary.equal(binary));
       if (found) {
         binary.clone(found.binary);

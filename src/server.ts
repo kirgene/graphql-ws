@@ -20,7 +20,6 @@ import { createIterableFromPromise } from './utils/promise-to-iterable';
 import { isASubscriptionOperation } from './utils/is-subscriptions';
 import { IncomingMessage } from 'http';
 import { Subject } from 'rxjs';
-import * as crypto from 'crypto';
 import {Binary, DataFunction, CompleteFunction, SerializedBinary} from './types/Binary';
 import {
   BINARY_CHUNK_SIZE, FilePayload, FileRequestPayload, findBinaries, IncomingFile,
@@ -119,32 +118,6 @@ export class SubscriptionServer {
 
   public static create(options: ServerOptions, socketOptions: WebSocket.IServerOptions) {
     return new SubscriptionServer(options, socketOptions);
-  }
-
-  private static async calcBinaryHash(file: Binary) {
-    // Check if hash was already provided
-    if (file.getHash()) {
-      return;
-    }
-    // TODO: Use web worker (see below comment block)
-    const hash = crypto.createHash('sha256');
-    file.startRead();
-    const buffer = new ArrayBuffer(BINARY_CHUNK_SIZE);
-    let read: number;
-    do {
-      read = await file.readInto(buffer, BINARY_CHUNK_SIZE);
-      hash.update(Buffer.from(buffer, 0, read));
-    } while (read === BINARY_CHUNK_SIZE);
-    file.setHash(hash.digest('base64'));
-
-    /*
-    return new Promise((resolve, reject) => {
-      const worker = new Worker('CalcMD5Worker.js');
-      worker.postMessage([f]);
-      worker.onmessage = (e) => resolve(e.data.md5);
-      worker.onerror = reject;
-    });
-    */
   }
 
   constructor(options: ServerOptions, socketOptions: WebSocket.IServerOptions) {
@@ -326,7 +299,7 @@ export class SubscriptionServer {
   private processFiles(ctx: ConnectionContext, opId: number, variables?: { [key: string]: any }) {
     deserializeBinaries(variables || {}, (file) => {
       const obj = { connectionContext: ctx, opId, fileId: file.id };
-      const binary = new Binary(obj, this.binaryReader.bind(this), file);
+      const binary = new Binary(obj, { onRead: this.binaryReader.bind(this) }, file);
       const found = ctx.filesIn[opId].find(f => f.binary.equal(binary));
       if (found) {
         binary.clone(found.binary);
@@ -344,7 +317,7 @@ export class SubscriptionServer {
   private async extractFiles(response?: { [key: string]: any }): Promise<Binary[]> {
     const files: Binary[] = [];
     for (let file of findBinaries(response || {})) {
-      await SubscriptionServer.calcBinaryHash(file);
+      await file.initMetadata();
       const found = files.find((f: Binary) => f.equal(file));
       if (!found) {
         files.push(file);
@@ -364,7 +337,7 @@ export class SubscriptionServer {
     buffer.setUint32(4, MessageType.GQL_BINARY, true);
     buffer.setUint32(8, file.getId(), true);
 
-    file.startRead();
+    file.initRead(offset);
     let read: number;
     do {
       read = await file.readInto(buffer.buffer, chunkSize, headerSize);

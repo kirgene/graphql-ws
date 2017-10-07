@@ -2,13 +2,15 @@ import { EventEmitter } from 'events';
 
 export type DataFunction = (data: Buffer | ArrayBuffer) => Promise<any>;
 export type CompleteFunction = (error?: any) => Promise<any>;
-export type BinaryReaderFunction = (resource: any, offset: number, onData: DataFunction, onComplete: CompleteFunction) => void;
+export type BinaryReadFunction = (resource: any, offset: number, onData: DataFunction, onComplete: CompleteFunction) => void;
+export type BinaryHashFunction = (resource: any) => Promise<string>;
+export type BinarySizeFunction = (resource: any) => Promise<number>;
 
-// TODO: Add totalSize field to track progress (only!, without detecting EOS) on client/server
 export interface SerializedBinary {
   ___binary: true;
   id: number;
   hash: string;
+  size: number;
 }
 
 class BinaryError extends Error {
@@ -17,45 +19,74 @@ class BinaryError extends Error {
   }
 }
 
+export interface BinaryOptions {
+  onRead: BinaryReadFunction;
+  onHash?: BinaryHashFunction;
+  onSize?: BinarySizeFunction;
+}
+
 export class Binary {
   private static _id: number = 0;
   // 1MB, make it larger than chunk size (like 10MB) or similar
   private static readonly MAX_BUFFER_SIZE: number = 1024 * 1024;
-  private size: number;
   private buf: any[];
   private bufPos: number;
+  private bufSize: number;
   private resource: any;
-  private reader: any;
+  private onRead: BinaryReadFunction;
+  private onHash: BinaryHashFunction;
+  private onSize: BinarySizeFunction;
   private event: EventEmitter;
   private eos: Symbol;
   private hash: string;
   private id: number;
+  private size: number;
 
   public static isBinary(obj: Object) {
     return obj && (typeof obj === 'object') && obj.hasOwnProperty('___binary');
   }
 
-  constructor(resource: any, reader: BinaryReaderFunction, serialized?: SerializedBinary) {
-    this.size = 0;
+  constructor(resource: any, options: BinaryOptions, serialized?: SerializedBinary) {
     this.buf = [];
     this.bufPos = 0;
-    this.resource = resource;
-    this.reader = reader;
-    this.event = new EventEmitter();
+    this.bufSize = 0;
     this.eos = Symbol('EOS');
+    this.resource = resource;
+    this.onRead = options.onRead;
+    this.onSize = options.onSize;
+    this.onHash = options.onHash;
+    this.event = new EventEmitter();
     if (serialized && serialized.___binary) {
       this.hash = serialized.hash;
       this.id = serialized.id;
+      this.size = serialized.size;
     } else {
       this.hash = null;
       this.id = ++Binary._id;
+      this.size = 0;
     }
   }
-  public startRead(offset = 0) {
-    this.size = 0;
+  public initRead(offset = 0) {
     this.buf = [];
     this.bufPos = 0;
-    this.reader(this.resource, offset, this.onData.bind(this), this.onComplete.bind(this));
+    this.bufSize = 0;
+    this.onRead(this.resource, offset, this.onData.bind(this), this.onComplete.bind(this));
+  }
+  public async initMetadata() {
+    if (!this.hash) {
+      if (!this.onHash) {
+        throw new Error('hash and onHash callback not defined');
+      } else {
+        this.hash = await this.onHash(this.resource);
+      }
+    }
+    if (!this.size) {
+      if (!this.onSize) {
+        throw new Error('size and onSize callback not defined');
+      } else {
+        this.size = await this.onSize(this.resource);
+      }
+    }
   }
   public async readInto(dest: ArrayBuffer, size: number, offset = 0): Promise<number> {
     if (size > Binary.MAX_BUFFER_SIZE) {
@@ -87,7 +118,7 @@ export class Binary {
       }
       new Uint8Array(dest).set(array, offset + read);
       if (this.buf[0].byteLength === (this.bufPos + array.byteLength)) {
-        this.size -= this.buf[0].byteLength;
+        this.bufSize -= this.buf[0].byteLength;
         this.buf.shift(); // Remove processed element
         this.bufPos = 0;
         this.event.emit('removed');
@@ -103,31 +134,39 @@ export class Binary {
     }
     return read;
   }
-  public getHash() {
+  public getHash(): string {
     return this.hash;
   }
-  public setHash(hash: string) {
-    this.hash = hash;
+  public getSize(): number {
+    return this.size;
   }
-  public getId() {
+  public getId(): number {
     return this.id;
   }
   public equal(binary: Binary) {
-    return this.hash === binary.hash;
+    return (this === binary) || (this.hash && binary.hash && this.hash === binary.hash);
   }
   public clone(source: Binary) {
-    this.size = source.size;
     this.buf = source.buf;
     this.bufPos = source.bufPos;
+    this.bufSize = source.bufSize;
     this.resource = source.resource;
-    this.reader = source.reader;
+    this.onRead = source.onRead;
+    this.onHash = source.onHash;
+    this.onSize = source.onSize;
     this.event = source.event;
     this.eos = source.eos;
     this.hash = source.hash;
+    this.size = source.size;
     this.id = source.id;
   }
-  public toJSON() {
-    return { ___binary: true, id: this.id, hash: this.hash };
+  public toJSON(): SerializedBinary {
+    return {
+      ___binary: true,
+      id: this.id,
+      hash: this.hash,
+      size: this.size,
+    };
   }
   private isValidData(data: any) {
     return (data instanceof Buffer) ||
@@ -139,14 +178,13 @@ export class Binary {
     if (this.isValidData(data)) {
       this.buf.push(data);
     } else {
-      console.log('Unexpected data type: Buffer or ArrayBuffer expected');
-      return;
+      throw new Error('Unexpected data type: Buffer or ArrayBuffer expected');
     }
     if (data) {
-      this.size += data.byteLength;
+      this.bufSize += data.byteLength;
     }
     this.event.emit('added');
-    while (this.size > Binary.MAX_BUFFER_SIZE) {
+    while (this.bufSize > Binary.MAX_BUFFER_SIZE) {
       await this.waitForSpace();
     }
   }
