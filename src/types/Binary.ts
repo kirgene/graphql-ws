@@ -4,6 +4,7 @@ export type DataFunction = (data: Buffer | ArrayBuffer) => Promise<any>;
 export type CompleteFunction = (error?: any) => Promise<any>;
 export type BinaryReaderFunction = (resource: any, offset: number, onData: DataFunction, onComplete: CompleteFunction) => void;
 
+// TODO: Add totalSize field to track progress (only!, without detecting EOS) on client/server
 export interface SerializedBinary {
   ___binary: true;
   id: number;

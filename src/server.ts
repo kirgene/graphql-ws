@@ -1,4 +1,5 @@
 import * as WebSocket from 'ws';
+import { EventEmitter } from 'events';
 
 import { MessageType } from './message-type';
 import { GRAPHQL_WS } from './protocol';
@@ -47,6 +48,7 @@ export type ConnectionContext = {
   filesOut: {
     [id: number]: Binary[],
   }
+  filesOutEvent: EventEmitter;
   operations: {
     [opId: number]: ExecutionIterator,
   },
@@ -182,6 +184,7 @@ export class SubscriptionServer {
       connectionContext.operations = {};
       connectionContext.filesIn = {};
       connectionContext.filesOut = {};
+      connectionContext.filesOutEvent = new EventEmitter();
 
       // Regular keep alive messages if keepAlive is set
       if (this.keepAlive) {
@@ -546,9 +549,11 @@ export class SubscriptionServer {
                   }
 
                   this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
-                  await new Promise(() => {
-
-                  });
+                }).then(async () => {
+                  // For for all outgoing files being processed
+                  while (connectionContext.filesOut[opId].length > 0) {
+                    await new Promise(resolve => connectionContext.filesOutEvent.once(opId.toString(), resolve));
+                  }
                 })
                 .then(() => {
                   this.sendMessage(connectionContext, opId, MessageType.GQL_COMPLETE, null);
@@ -619,6 +624,7 @@ export class SubscriptionServer {
                 await this.sendSingleFile(connectionContext, opId, file, offset);
                 const index = connectionContext.filesOut[opId].findIndex(f => f === file);
                 delete connectionContext.filesOut[opId][index];
+                connectionContext.filesOutEvent.emit(opId.toString());
               }
             }
           });
