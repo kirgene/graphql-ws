@@ -26,10 +26,6 @@ import { PubSub, withFilter } from 'graphql-subscriptions';
 
 import { MessageType } from '../message-type';
 
-import {
-  GRAPHQL_SUBSCRIPTIONS,
-} from '../protocol';
-
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { SubscriptionServer, ExecutionParams } from '../server';
 import {Observable, SubscriptionClient} from '../client';
@@ -256,11 +252,12 @@ describe('Client', function () {
     }
   });
 
+  /*
   it('file upload', (done) => {
     const client = new SubscriptionClient(`ws://localhost:${TEST_PORT}/`);
 
     client.request({
-      query: 'mutation uploadFile($file: File!) { uploadFile(file: $file) }',
+      query: 'mutation uploadFile($file: Binary!) { uploadFile(file: $file) }',
       variables: {
         file: new File('/bin/bash'),
       },
@@ -272,6 +269,7 @@ describe('Client', function () {
       },
     });
   });
+  */
 
   it('should send GQL_CONNECTION_INIT message when creating the connection', (done) => {
     wsServer.on('connection', (connection: any) => {
@@ -1889,7 +1887,7 @@ describe('Server', function () {
   });
 
   it('rejects unparsable message', function (done) {
-    const client = new WebSocket(`ws://localhost:${TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
+    const client = new WebSocket(`ws://localhost:${TEST_PORT}/`);
     client.onmessage = (message: any) => {
       let messageData = JSON.parse(message.data);
       assert.equal(messageData.type, MessageType.GQL_CONNECTION_ERROR);
@@ -1903,7 +1901,7 @@ describe('Server', function () {
   });
 
   it('rejects nonsense message', function (done) {
-    const client = new WebSocket(`ws://localhost:${TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
+    const client = new WebSocket(`ws://localhost:${TEST_PORT}/`);
     client.onmessage = (message: any) => {
       let messageData = JSON.parse(message.data);
       assert.equal(messageData.type, MessageType.GQL_ERROR);
@@ -1918,7 +1916,7 @@ describe('Server', function () {
 
   it('does not crash on unsub for Object.prototype member', function (done) {
     // Use websocket because Client.unsubscribe will only take a number.
-    const client = new WebSocket(`ws://localhost:${TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
+    const client = new WebSocket(`ws://localhost:${TEST_PORT}/`);
 
     client.onopen = () => {
       client.send(JSON.stringify({ type: MessageType.GQL_STOP, id: 'toString' }));
@@ -1946,7 +1944,7 @@ describe('Server', function () {
   });
 
   it('sends a keep alive signal in the socket', function (done) {
-    let client = new WebSocket(`ws://localhost:${KEEP_ALIVE_TEST_PORT}/`, GRAPHQL_SUBSCRIPTIONS);
+    let client = new WebSocket(`ws://localhost:${KEEP_ALIVE_TEST_PORT}/`);
     let yieldCount = 0;
     client.onmessage = (message: any) => {
       const parsedMessage = JSON.parse(message.data);

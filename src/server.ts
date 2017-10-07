@@ -19,7 +19,12 @@ import { createIterableFromPromise } from './utils/promise-to-iterable';
 import { isASubscriptionOperation } from './utils/is-subscriptions';
 import { IncomingMessage } from 'http';
 import { Subject } from 'rxjs';
-import File from './types/File';
+import * as crypto from 'crypto';
+import {Binary, DataFunction, CompleteFunction, SerializedBinary} from './types/Binary';
+import {
+  BINARY_CHUNK_SIZE, FilePayload, FileRequestPayload, findBinaries, IncomingFile,
+  deserializeBinaries
+} from './common';
 
 export type ExecutionIterator = AsyncIterator<ExecutionResult>;
 
@@ -36,34 +41,26 @@ export interface ExecutionParams<TContext = any> {
 export type ConnectionContext = {
   initPromise?: Promise<any>,
   socket: WebSocket,
-  files: {
-    [id: number]: {
-      [id: number]: {
-        size: number,
-        received: number,
-        writer: any,
-      },
-    },
+  filesIn: {
+    [id: number]: IncomingFile[],
+  }
+  filesOut: {
+    [id: number]: Binary[],
   }
   operations: {
     [opId: number]: ExecutionIterator,
   },
 };
 
-export interface OperationMessageQueryPayload {
+export interface QueryPayload {
   [key: string]: any; // this will support for example any options sent in init like the auth token
   query?: string;
   variables?: { [key: string]: any };
   operationName?: string;
 }
 
-export interface OperationMessageFilePayload {
-  fileId: number;
-  buffer: ArrayBuffer;
-}
-
 export interface OperationMessage {
-  payload?: OperationMessageQueryPayload | OperationMessageFilePayload;
+  payload?: QueryPayload | FilePayload | FileRequestPayload;
   id?: string;
   type: number;
 }
@@ -122,6 +119,32 @@ export class SubscriptionServer {
     return new SubscriptionServer(options, socketOptions);
   }
 
+  private static async calcBinaryHash(file: Binary) {
+    // Check if hash was already provided
+    if (file.getHash()) {
+      return;
+    }
+    // TODO: Use web worker (see below comment block)
+    const hash = crypto.createHash('sha256');
+    file.startRead();
+    const buffer = new ArrayBuffer(BINARY_CHUNK_SIZE);
+    let read: number;
+    do {
+      read = await file.readInto(buffer, BINARY_CHUNK_SIZE);
+      hash.update(Buffer.from(buffer, 0, read));
+    } while (read === BINARY_CHUNK_SIZE);
+    file.setHash(hash.digest('base64'));
+
+    /*
+    return new Promise((resolve, reject) => {
+      const worker = new Worker('CalcMD5Worker.js');
+      worker.postMessage([f]);
+      worker.onmessage = (e) => resolve(e.data.md5);
+      worker.onerror = reject;
+    });
+    */
+  }
+
   constructor(options: ServerOptions, socketOptions: WebSocket.IServerOptions) {
     const {
       onOperation, onOperationComplete, onConnect, onDisconnect, keepAlive,
@@ -157,7 +180,8 @@ export class SubscriptionServer {
       const connectionContext: ConnectionContext = Object.create(null);
       connectionContext.socket = socket;
       connectionContext.operations = {};
-      connectionContext.files = {};
+      connectionContext.filesIn = {};
+      connectionContext.filesOut = {};
 
       // Regular keep alive messages if keepAlive is set
       if (this.keepAlive) {
@@ -237,7 +261,8 @@ export class SubscriptionServer {
       }
 
       delete connectionContext.operations[opId];
-      delete connectionContext.files[opId];
+      delete connectionContext.filesIn[opId];
+      delete connectionContext.filesOut[opId];
 
       if (this.onOperationComplete) {
         this.onOperationComplete(connectionContext.socket, opId);
@@ -254,12 +279,13 @@ export class SubscriptionServer {
   private parseMessage(buffer: any) {
     const message = new DataView(buffer);
     let result;
+    // TODO: Check buffer size before accessing it
     let payloadBase = {
       id: message.getUint32(0, true),
       type: message.getUint32(4, true),
     };
-    if (payloadBase.type === MessageType.GQL_FILE) {
-      const payload: OperationMessageFilePayload = {
+    if (payloadBase.type === MessageType.GQL_BINARY) {
+      const payload: FilePayload = {
         fileId: message.getUint32(8, true),
         buffer: buffer.slice(12),
       };
@@ -269,7 +295,7 @@ export class SubscriptionServer {
       };
     } else {
       const payloadStr = Buffer.from(buffer, 8).toString();
-      const payload: OperationMessageQueryPayload = payloadStr.length > 0 ? JSON.parse(payloadStr) : null;
+      const payload: QueryPayload = payloadStr.length > 0 ? JSON.parse(payloadStr) : null;
       result = {
         ...payloadBase,
         payload,
@@ -278,24 +304,77 @@ export class SubscriptionServer {
     return result;
   }
 
-  private processFiles(connectionContext: ConnectionContext, opId: number, variables: Object) {
-    for (let k of Object.keys(variables || {})) {
-      const val = (<any>variables)[k];
-      if (val.hasOwnProperty('___file')) {
-        connectionContext.files[opId] = {};
-        const writer = new Subject();
-        connectionContext.files[opId][val.id] = {
-          writer,
-          size: val.size,
-          received: 0,
-        };
-        (<any>variables)[k] = {
-          name : val.name,
-          file: writer,
-          size: val.size,
-        };
+  private binaryReader(resource: any, offset: number, onData: DataFunction, onComplete: CompleteFunction) {
+    const { connectionContext, opId, fileId } = resource;
+    const file = connectionContext.filesIn[opId].find((f: IncomingFile) => f.binary.getId() === fileId);
+    const reader = file.reader;
+    const request = {
+      id: fileId,
+      offset,
+    };
+    this.sendMessage(connectionContext, opId, MessageType.GQL_BINARY_REQUEST, request);
+    reader.subscribe(
+      async (data: ArrayBuffer) => onData(data),
+      async (error: any) => onComplete(error),
+      async () => onComplete(),
+      );
+  }
+
+  private processFiles(ctx: ConnectionContext, opId: number, variables?: { [key: string]: any }) {
+    deserializeBinaries(variables || {}, (file) => {
+      const obj = { connectionContext: ctx, opId, fileId: file.id };
+      const binary = new Binary(obj, this.binaryReader.bind(this), file);
+      const found = ctx.filesIn[opId].find(f => f.binary.equal(binary));
+      if (found) {
+        binary.clone(found.binary);
+      } else {
+        const reader = new Subject();
+        ctx.filesIn[opId].push({
+          binary,
+          reader,
+        });
+      }
+      return binary;
+    });
+  }
+
+  private async extractFiles(response?: { [key: string]: any }): Promise<Binary[]> {
+    const files: Binary[] = [];
+    for (let file of findBinaries(response || {})) {
+      await SubscriptionServer.calcBinaryHash(file);
+      const found = files.find((f: Binary) => f.equal(file));
+      if (!found) {
+        files.push(file);
+      } else {
+        file.clone(found);
       }
     }
+    return files;
+  }
+
+  private async sendSingleFile(connectionContext: ConnectionContext, opId: number, file: Binary, offset = 0) {
+    const headerSize = 4 * 3;
+    const chunkSize = BINARY_CHUNK_SIZE;
+
+    const buffer = new DataView(new ArrayBuffer(headerSize + chunkSize));
+    buffer.setUint32(0, opId, true);
+    buffer.setUint32(4, MessageType.GQL_BINARY, true);
+    buffer.setUint32(8, file.getId(), true);
+
+    file.startRead();
+    let read: number;
+    do {
+      read = await file.readInto(buffer.buffer, chunkSize, headerSize);
+      if (connectionContext.socket.readyState !== WebSocket.OPEN) {
+        break;
+      }
+      let buf = buffer.buffer;
+      if (read < chunkSize) {
+        buf = buffer.buffer.slice(0, headerSize + read);
+      }
+      connectionContext.socket.send(buf);
+    } while (read === chunkSize);
+    connectionContext.socket.send(buffer.buffer.slice(0, headerSize));
   }
 
   private onMessage(connectionContext: ConnectionContext) {
@@ -375,7 +454,7 @@ export class SubscriptionServer {
             if (connectionContext.operations && connectionContext.operations[opId]) {
               this.unsubscribe(connectionContext, opId);
             }
-            const payload: OperationMessageQueryPayload = (<OperationMessageQueryPayload>parsedMessage.payload);
+            const payload: QueryPayload = (<QueryPayload>parsedMessage.payload);
 
             const baseParams: ExecutionParams = {
               query: payload.query,
@@ -393,6 +472,8 @@ export class SubscriptionServer {
 
             // set an initial mock subscription to only registering opId
             connectionContext.operations[opId] = createEmptyIterable();
+            connectionContext.filesIn[opId] = [];
+            connectionContext.filesOut[opId] = [];
 
             if (this.onOperation) {
               let messageForCallback: any = parsedMessage;
@@ -452,8 +533,9 @@ export class SubscriptionServer {
             }).then(({ executionIterable, params }) => {
               forAwaitEach(
                 createAsyncIterator(executionIterable) as any,
-                (value: ExecutionResult) => {
+                async (value: ExecutionResult) => {
                   let result = value;
+                  connectionContext.filesOut[opId] = await this.extractFiles(result.data);
 
                   if (params.formatResponse) {
                     try {
@@ -464,6 +546,9 @@ export class SubscriptionServer {
                   }
 
                   this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
+                  await new Promise(() => {
+
+                  });
                 })
                 .then(() => {
                   this.sendMessage(connectionContext, opId, MessageType.GQL_COMPLETE, null);
@@ -509,21 +594,31 @@ export class SubscriptionServer {
           });
           break;
 
-        case MessageType.GQL_FILE:
+        case MessageType.GQL_BINARY:
           connectionContext.initPromise.then(() => {
-            const payload: OperationMessageFilePayload = (<OperationMessageFilePayload>parsedMessage.payload);
-            if (connectionContext.operations &&
-              connectionContext.operations[opId] &&
-              connectionContext.files[opId] &&
-              connectionContext.files[opId][payload.fileId]
-            ) {
-              const f = connectionContext.files[opId][payload.fileId];
-              f.writer.next(payload.buffer);
-              f.received += payload.buffer.byteLength;
-              if (f.received === f.size) {
-                f.writer.complete();
-              } else if (f.received > f.size) {
-                console.log('BUG: Received file size is greater than original size!!!');
+            const payload: FilePayload = (<FilePayload>parsedMessage.payload);
+            if (connectionContext.filesIn[opId]) {
+              const file = connectionContext.filesIn[opId].find(f => f.binary.getId() === payload.fileId);
+              if (file) {
+                file.reader.next(payload.buffer);
+                if (payload.buffer.byteLength === 0) {
+                  file.reader.complete();
+                }
+              }
+            }
+          });
+          break;
+
+        case MessageType.GQL_BINARY_REQUEST:
+          connectionContext.initPromise.then(async () => {
+            const payload: FileRequestPayload = (<FileRequestPayload> parsedMessage.payload);
+            if (connectionContext.filesOut[opId]) {
+              const { id, offset } = payload;
+              const file = connectionContext.filesOut[opId].find(f => f.getId() === id);
+              if (file) {
+                await this.sendSingleFile(connectionContext, opId, file, offset);
+                const index = connectionContext.filesOut[opId].findIndex(f => f === file);
+                delete connectionContext.filesOut[opId][index];
               }
             }
           });

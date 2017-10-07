@@ -164,7 +164,7 @@ If you are using older version, or another GraphQL server, start by modifying Gr
 Then, create `SubscriptionClient` and define the fetcher:
 
 ```js
-let subscriptionsClient = new window.SubscriptionsTransportWs.SubscriptionClient('SUBSCRIPTION_WS_URL_HERE', {
+let subscriptionsClient = new window.GraphQLWS.SubscriptionClient('SUBSCRIPTION_WS_URL_HERE', {
   reconnect: true
 });
 let myCustomFetcher = window.GraphiQLSubscriptionsFetcher.graphQLFetcher(subscriptionsClient, graphQLFetcher);
