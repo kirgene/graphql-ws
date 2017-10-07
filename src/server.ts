@@ -550,7 +550,7 @@ export class SubscriptionServer {
 
                   this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
                 }).then(async () => {
-                  // For for all outgoing files being processed
+                  // Wait for all outgoing files being processed
                   while (connectionContext.filesOut[opId].length > 0) {
                     await new Promise(resolve => connectionContext.filesOutEvent.once(opId.toString(), resolve));
                   }
