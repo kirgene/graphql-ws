@@ -54,7 +54,7 @@ export class BinaryReceiver extends Readable {
       if (err) {
         process.nextTick(() => this.emit('error', err));
       } else {
-        this.socket.addEventListener('message', this.onMessage);
+        this.socket.on('message', this.onMessage);
       }
     });
   }
@@ -63,7 +63,7 @@ export class BinaryReceiver extends Readable {
     this.socket.removeListener('message', this.onMessage);
   }
 
-  private async onMessage({ data }: { data: ArrayBuffer }) {
+  private async onMessage(data: ArrayBuffer ) {
     const buf = Buffer.from(data);
     let id, fileId, seq;
     // TODO: Check buffer size before accessing it

@@ -78,7 +78,7 @@ export class BinarySender extends Writable {
 
   private async waitAck() {
     return new Promise(resolve => {
-      const onMessage = ({ data }: { data: ArrayBuffer }) => {
+      const onMessage = (data: ArrayBuffer) => {
         const message = Buffer.from(data);
         let id, fileId, seq;
         // TODO: Check buffer size before accessing it
@@ -93,7 +93,7 @@ export class BinarySender extends Writable {
           resolve();
         }
       };
-      this.socket.addEventListener('message', onMessage);
+      this.socket.on('message', onMessage);
     });
   }
 
