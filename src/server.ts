@@ -19,12 +19,11 @@ import { createAsyncIterator, forAwaitEach, isAsyncIterable } from 'iterall';
 import { createIterableFromPromise } from './utils/promise-to-iterable';
 import { isASubscriptionOperation } from './utils/is-subscriptions';
 import { IncomingMessage } from 'http';
-import { Subject } from 'rxjs';
-import {Binary, DataFunction, CompleteFunction, SerializedBinary} from './types/Binary';
+import {Binary} from './Binary';
 import {
-  BINARY_CHUNK_SIZE, FilePayload, FileRequestPayload, findBinaries, IncomingFile,
-  deserializeBinaries
+  FileRequestPayload, extractIncomingFiles, extractOutgoingFiles, buildMessage, parseMessage,
 } from './common';
+import {BinarySender} from './BinarySender';
 
 export type ExecutionIterator = AsyncIterator<ExecutionResult>;
 
@@ -42,7 +41,7 @@ export type ConnectionContext = {
   initPromise?: Promise<any>,
   socket: WebSocket,
   filesIn: {
-    [id: number]: IncomingFile[],
+    [id: number]: Binary[],
   }
   filesOut: {
     [id: number]: Binary[],
@@ -61,7 +60,7 @@ export interface QueryPayload {
 }
 
 export interface OperationMessage {
-  payload?: QueryPayload | FilePayload | FileRequestPayload;
+  payload?: QueryPayload | FileRequestPayload;
   id?: string;
   type: number;
 }
@@ -92,6 +91,7 @@ export interface ServerOptions {
   schema?: GraphQLSchema;
   execute?: ExecuteFunction;
   subscribe?: SubscribeFunction;
+  formatError?: Function;
   validationRules?: Array<(context: ValidationContext) => any>;
 
   onOperation?: Function;
@@ -111,6 +111,7 @@ export class SubscriptionServer {
   private execute: ExecuteFunction;
   private subscribe: SubscribeFunction;
   private schema: GraphQLSchema;
+  private formatError: Function;
   private rootValue: any;
   private keepAlive: number;
   private closeHandler: () => void;
@@ -118,6 +119,33 @@ export class SubscriptionServer {
 
   public static create(options: ServerOptions, socketOptions: WebSocket.IServerOptions) {
     return new SubscriptionServer(options, socketOptions);
+  }
+
+  private static sendMessage(connectionContext: ConnectionContext, opId: number, type: number, payload: any): void {
+    const message = buildMessage(opId, type, payload);
+
+    if (connectionContext.socket.readyState === WebSocket.OPEN) {
+      connectionContext.socket.send(message);
+    }
+  }
+
+  private static sendError(connectionContext: ConnectionContext, opId: number, errorPayload: any,
+                           overrideDefaultErrorType?: number): void {
+    const sanitizedOverrideDefaultErrorType = overrideDefaultErrorType || MessageType.GQL_ERROR;
+    if ([
+        MessageType.GQL_CONNECTION_ERROR,
+        MessageType.GQL_ERROR,
+      ].indexOf(sanitizedOverrideDefaultErrorType) === -1) {
+      throw new Error('overrideDefaultErrorType should be one of the allowed error messages' +
+        ' GQL_CONNECTION_ERROR or GQL_ERROR');
+    }
+
+    SubscriptionServer.sendMessage(
+      connectionContext,
+      opId,
+      sanitizedOverrideDefaultErrorType,
+      errorPayload,
+    );
   }
 
   constructor(options: ServerOptions, socketOptions: WebSocket.IServerOptions) {
@@ -163,7 +191,7 @@ export class SubscriptionServer {
       if (this.keepAlive) {
         const keepAliveTimer = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN) {
-            this.sendMessage(connectionContext, undefined, MessageType.GQL_CONNECTION_KEEP_ALIVE, undefined);
+            SubscriptionServer.sendMessage(connectionContext, undefined, MessageType.GQL_CONNECTION_KEEP_ALIVE, undefined);
           } else {
             clearInterval(keepAliveTimer);
           }
@@ -172,7 +200,7 @@ export class SubscriptionServer {
 
       const connectionClosedHandler = (error: any) => {
         if (error) {
-          this.sendError(
+          SubscriptionServer.sendError(
             connectionContext,
             0,
             { message: error.message ? error.message : error },
@@ -212,7 +240,7 @@ export class SubscriptionServer {
   }
 
   private loadExecutor(options: ServerOptions) {
-    const { execute, subscribe, schema, rootValue } = options;
+    const { execute, subscribe, schema, rootValue, formatError } = options;
 
     if (!execute) {
       throw new Error('Must provide `execute` for websocket server constructor.');
@@ -226,6 +254,7 @@ export class SubscriptionServer {
 
     this.schema = schema;
     this.rootValue = rootValue;
+    this.formatError = formatError;
     this.execute = execute;
     this.subscribe = subscribe;
   }
@@ -252,107 +281,6 @@ export class SubscriptionServer {
     });
   }
 
-  private parseMessage(buffer: any) {
-    const message = new DataView(buffer);
-    let result;
-    // TODO: Check buffer size before accessing it
-    let payloadBase = {
-      id: message.getUint32(0, true),
-      type: message.getUint32(4, true),
-    };
-    if (payloadBase.type === MessageType.GQL_BINARY) {
-      const payload: FilePayload = {
-        fileId: message.getUint32(8, true),
-        buffer: buffer.slice(12),
-      };
-      result = {
-        ...payloadBase,
-        payload,
-      };
-    } else {
-      const payloadStr = Buffer.from(buffer, 8).toString();
-      const payload: QueryPayload = payloadStr.length > 0 ? JSON.parse(payloadStr) : null;
-      result = {
-        ...payloadBase,
-        payload,
-      };
-    }
-    return result;
-  }
-
-  private binaryReader(resource: any, offset: number, onData: DataFunction, onComplete: CompleteFunction) {
-    const { connectionContext, opId, fileId } = resource;
-    const file = connectionContext.filesIn[opId].find((f: IncomingFile) => f.binary.getId() === fileId);
-    const reader = file.reader;
-    const request = {
-      id: fileId,
-      offset,
-    };
-    this.sendMessage(connectionContext, opId, MessageType.GQL_BINARY_REQUEST, request);
-    reader.subscribe(
-      async (data: ArrayBuffer) => onData(data),
-      async (error: any) => onComplete(error),
-      async () => onComplete(),
-      );
-  }
-
-  private processFiles(ctx: ConnectionContext, opId: number, variables?: { [key: string]: any }) {
-    deserializeBinaries(variables || {}, (file) => {
-      const obj = { connectionContext: ctx, opId, fileId: file.id };
-      const binary = new Binary(obj, { onRead: this.binaryReader.bind(this) }, file);
-      const found = ctx.filesIn[opId].find(f => f.binary.equal(binary));
-      if (found) {
-        binary.clone(found.binary);
-      } else {
-        const reader = new Subject();
-        ctx.filesIn[opId].push({
-          binary,
-          reader,
-        });
-      }
-      return binary;
-    });
-  }
-
-  private async extractFiles(response?: { [key: string]: any }): Promise<Binary[]> {
-    const files: Binary[] = [];
-    for (let file of findBinaries(response || {})) {
-      await file.initMetadata();
-      const found = files.find((f: Binary) => f.equal(file));
-      if (!found) {
-        files.push(file);
-      } else {
-        file.clone(found);
-      }
-    }
-    return files;
-  }
-
-  private async sendSingleFile(connectionContext: ConnectionContext, opId: number, file: Binary, offset = 0) {
-    const headerSize = 4 * 3;
-    const chunkSize = BINARY_CHUNK_SIZE;
-
-    const buffer = new DataView(new ArrayBuffer(headerSize + chunkSize));
-    buffer.setUint32(0, opId, true);
-    buffer.setUint32(4, MessageType.GQL_BINARY, true);
-    buffer.setUint32(8, file.getId(), true);
-
-    file.initRead(offset);
-    let read: number;
-    do {
-      read = await file.readInto(buffer.buffer, chunkSize, headerSize);
-      if (connectionContext.socket.readyState !== WebSocket.OPEN) {
-        break;
-      }
-      let buf = buffer.buffer;
-      if (read < chunkSize) {
-        buf = buffer.buffer.slice(0, headerSize + read);
-      }
-      connectionContext.socket.send(buf);
-    } while (read === chunkSize);
-    connectionContext.socket.send(buffer.buffer.slice(0, headerSize));
-  }
-
   private onMessage(connectionContext: ConnectionContext) {
     let onInitResolve: any = null, onInitReject: any = null;
 
@@ -362,7 +290,10 @@ export class SubscriptionServer {
     });
 
     return (message: any) => {
-      const parsedMessage = this.parseMessage(message);
+      const parsedMessage = parseMessage(message);
+      if (!parsedMessage) {
+        return;
+      }
       const opId = parsedMessage.id;
       switch (parsedMessage.type) {
         case MessageType.GQL_CONNECTION_INIT:
@@ -386,7 +317,7 @@ export class SubscriptionServer {
               throw new Error('Prohibited connection!');
             }
 
-            this.sendMessage(
+            SubscriptionServer.sendMessage(
               connectionContext,
               undefined,
               MessageType.GQL_CONNECTION_ACK,
@@ -394,7 +325,7 @@ export class SubscriptionServer {
             );
 
             if (this.keepAlive) {
-              this.sendMessage(
+              SubscriptionServer.sendMessage(
                 connectionContext,
                 undefined,
                 MessageType.GQL_CONNECTION_KEEP_ALIVE,
@@ -402,7 +333,7 @@ export class SubscriptionServer {
               );
             }
           }).catch((error: Error) => {
-            this.sendError(
+            SubscriptionServer.sendError(
               connectionContext,
               opId,
               { message: error.message },
@@ -459,7 +390,7 @@ export class SubscriptionServer {
             promisedParams.then((params: any) => {
               if (typeof params !== 'object') {
                 const error = `Invalid params returned from onOperation! return values must be an object!`;
-                this.sendError(connectionContext, opId, { message: error });
+                SubscriptionServer.sendError(connectionContext, opId, { message: error });
 
                 throw new Error(error);
               }
@@ -478,7 +409,7 @@ export class SubscriptionServer {
                   executor = this.subscribe;
                 }
 
-                this.processFiles(connectionContext, opId, params.variables);
+                connectionContext.filesIn[opId] = extractIncomingFiles(opId, connectionContext.socket, params.variables);
 
                 const promiseOrIterable = executor(this.schema,
                   document,
@@ -495,7 +426,7 @@ export class SubscriptionServer {
                   // Unexpected return value from execute - log it as error and trigger an error to client side
                   console.error('Invalid `execute` return type! Only Promise or AsyncIterable are valid values!');
 
-                  this.sendError(connectionContext, opId, {
+                  SubscriptionServer.sendError(connectionContext, opId, {
                     message: 'GraphQL execute engine is not available',
                   });
                 }
@@ -511,7 +442,7 @@ export class SubscriptionServer {
                 createAsyncIterator(executionIterable) as any,
                 async (value: ExecutionResult) => {
                   let result = value;
-                  connectionContext.filesOut[opId] = await this.extractFiles(result.data);
+                  connectionContext.filesOut[opId] = extractOutgoingFiles(result.data);
 
                   if (params.formatResponse) {
                     try {
@@ -521,15 +452,15 @@ export class SubscriptionServer {
                     }
                   }
 
-                  this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
+                  SubscriptionServer.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
                 }).then(async () => {
                   // Wait for all outgoing files being processed
-                  while (connectionContext.filesOut[opId].length > 0) {
+                  while (connectionContext.filesOut[opId] && connectionContext.filesOut[opId].length > 0) {
                     await new Promise(resolve => connectionContext.filesOutEvent.once(opId.toString(), resolve));
                   }
                 })
                 .then(() => {
-                  this.sendMessage(connectionContext, opId, MessageType.GQL_COMPLETE, null);
+                  SubscriptionServer.sendMessage(connectionContext, opId, MessageType.GQL_COMPLETE, null);
                   this.unsubscribe(connectionContext, opId);
                 })
                 .catch((e: Error) => {
@@ -548,7 +479,7 @@ export class SubscriptionServer {
                     error = { name: e.name, message: e.message };
                   }
 
-                  this.sendError(connectionContext, opId, error);
+                  SubscriptionServer.sendError(connectionContext, opId, error);
                 });
 
               return executionIterable;
@@ -557,33 +488,18 @@ export class SubscriptionServer {
             }).then(() => {
               // NOTE: This is a temporary code to support the legacy protocol.
               // As soon as the old protocol has been removed, this coode should also be removed.
-       //       this.sendMessage(connectionContext, opId, MessageTypes.SUBSCRIPTION_SUCCESS, undefined);
+       //       SubscriptionServer.sendMessage(connectionContext, opId, MessageTypes.SUBSCRIPTION_SUCCESS, undefined);
             }).catch((e: any) => {
               if (e.errors) {
-                this.sendMessage(connectionContext, opId, MessageType.GQL_DATA, { errors: e.errors });
+                SubscriptionServer.sendMessage(connectionContext, opId, MessageType.GQL_DATA, { errors: e.errors });
               } else {
-                this.sendError(connectionContext, opId, { message: e.message });
+                SubscriptionServer.sendError(connectionContext, opId, { message: e.message });
               }
 
               // Remove the operation on the server side as it will be removed also in the client
               this.unsubscribe(connectionContext, opId);
               return;
             });
-          });
-          break;
-
-        case MessageType.GQL_BINARY:
-          connectionContext.initPromise.then(() => {
-            const payload: FilePayload = (<FilePayload>parsedMessage.payload);
-            if (connectionContext.filesIn[opId]) {
-              const file = connectionContext.filesIn[opId].find(f => f.binary.getId() === payload.fileId);
-              if (file) {
-                file.reader.next(payload.buffer);
-                if (payload.buffer.byteLength === 0) {
-                  file.reader.complete();
-                }
-              }
-            }
           });
           break;
 
@@ -594,10 +510,23 @@ export class SubscriptionServer {
               const { id, offset } = payload;
               const file = connectionContext.filesOut[opId].find(f => f.getId() === id);
               if (file) {
-                await this.sendSingleFile(connectionContext, opId, file, offset);
-                const index = connectionContext.filesOut[opId].findIndex(f => f === file);
-                delete connectionContext.filesOut[opId][index];
-                connectionContext.filesOutEvent.emit(opId.toString());
+                const reader = file.createReadStream(offset);
+                const writer = new BinarySender({
+                  opId,
+                  fileId: file.getId(),
+                  socket: connectionContext.socket,
+                });
+                const finish = new Promise((resolve, reject) => {
+                  reader.pipe(writer)
+                    .on('finish', resolve)
+                    .on('error', reject);
+                });
+                await finish;
+                if (connectionContext.filesOut[opId]) {
+                  const index = connectionContext.filesOut[opId].findIndex(f => f === file);
+                  delete connectionContext.filesOut[opId][index];
+                  connectionContext.filesOutEvent.emit(opId.toString());
+                }
               }
             }
           });
@@ -611,54 +540,9 @@ export class SubscriptionServer {
           break;
 
         default:
-          this.sendError(connectionContext, opId, { message: 'Invalid message type!' });
+          // SubscriptionServer.sendError(connectionContext, opId, { message: 'Invalid message type!' });
+          break;
       }
     };
-  }
-
-  private buildMessage(id: number, type: number, payload: any): ArrayBuffer {
-    let serializedMessage: string = JSON.stringify(payload) || '';
-
-    /*
-    const Message = StructType({
-      id: ref.types.uint32,
-      type: ref.types.uint32,
-      payload: ref.types.CString,
-    });
-     */
-    const headerSize = 4 * 2;
-
-    const message = new DataView(new ArrayBuffer(headerSize + serializedMessage.length));
-    message.setUint32(0, id, true);
-    message.setUint32(4, type, true);
-    new Uint8Array(message.buffer).set(Buffer.from(serializedMessage), 8);
-    return message.buffer;
-  }
-
-  private sendMessage(connectionContext: ConnectionContext, opId: number, type: number, payload: any): void {
-    const message = this.buildMessage(opId, type, payload);
-
-    if (connectionContext.socket.readyState === WebSocket.OPEN) {
-      connectionContext.socket.send(message);
-    }
-  }
-
-  private sendError(connectionContext: ConnectionContext, opId: number, errorPayload: any,
-                    overrideDefaultErrorType?: number): void {
-    const sanitizedOverrideDefaultErrorType = overrideDefaultErrorType || MessageType.GQL_ERROR;
-    if ([
-        MessageType.GQL_CONNECTION_ERROR,
-        MessageType.GQL_ERROR,
-      ].indexOf(sanitizedOverrideDefaultErrorType) === -1) {
-      throw new Error('overrideDefaultErrorType should be one of the allowed error messages' +
-        ' GQL_CONNECTION_ERROR or GQL_ERROR');
-    }
-
-    this.sendMessage(
-      connectionContext,
-      opId,
-      sanitizedOverrideDefaultErrorType,
-      errorPayload,
-    );
   }
 }

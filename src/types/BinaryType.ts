@@ -1,5 +1,5 @@
 import { GraphQLScalarType } from 'graphql';
-import { Binary } from './Binary';
+import { Binary } from '../Binary';
 
 const schema = `
   scalar Binary

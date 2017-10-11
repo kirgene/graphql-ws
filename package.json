@@ -10,13 +10,13 @@
   },
   "dependencies": {
     "backo2": "^1.0.2",
+    "class-autobind": "^0.1.4",
     "eventemitter3": "^2.0.3",
-    "fast-sha256": "^1.0.0",
     "iterall": "^1.1.1",
     "lodash.assign": "^4.2.0",
     "lodash.isobject": "^3.0.2",
     "lodash.isstring": "^4.0.1",
-    "rxjs": "^5.4.3",
+    "readable-stream": "^2.3.3",
     "symbol-observable": "^1.0.4",
     "ws": "^3.0.0"
   },

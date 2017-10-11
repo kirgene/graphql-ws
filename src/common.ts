@@ -1,25 +1,29 @@
-import {Binary, SerializedBinary} from './types/Binary';
-import {Subject} from 'rxjs';
+import {Binary, SerializedBinary} from './Binary';
+import {BinaryReceiver} from './BinaryReceiver';
+import {MessageType} from './message-type';
 
-export const BINARY_CHUNK_SIZE = 100 * 1024; // 100 KB
+export interface FileRequestPayload {
+  id: number;
+  offset: number;
+}
 
 export function repeatPromise(promise: () => Promise<boolean>): any {
     return promise().then((repeat: boolean) => repeat && repeatPromise(promise));
 }
 
-export function findBinaries(object: any): Binary[] {
+function findBinaries(object: any): Binary[] {
   const value: Binary[] = [];
   Object.keys(object || {}).forEach((k) => {
     if (object[k] instanceof Binary) {
       value.push(object[k]);
     } else if (object[k] && typeof object[k] === 'object') {
-      value.push(...this.findBinaries(object[k]));
+      value.push(...findBinaries(object[k]));
     }
   });
   return value;
 }
 
-export function deserializeBinaries(
+function deserializeBinaries(
   object: any,
   callback: (value: SerializedBinary) => Binary,
 ) {
@@ -27,22 +31,93 @@ export function deserializeBinaries(
     if (Binary.isBinary(object[k])) {
       object[k] = callback(object[k]);
     } else if (object[k] && typeof object[k] === 'object') {
-      this.deserializeBinaries(object[k], callback);
+      deserializeBinaries(object[k], callback);
     }
   });
 }
 
-export interface IncomingFile {
-  binary: Binary;
-  reader: Subject<any>;
+export function extractIncomingFiles(opId: number, socket: any, obj?: { [key: string]: any }): Binary[] {
+  const files: Binary[] = [];
+  deserializeBinaries(obj || {}, (file) => {
+    const onStream = (offset: number) => new BinaryReceiver({
+      opId,
+      fileId: file.id,
+      offset,
+      socket,
+    });
+    const binary = new Binary(onStream, file);
+    const found = files.find(f => f.equal(binary));
+    if (found) {
+      binary.clone(found);
+    } else {
+      files.push(binary);
+    }
+    return binary;
+  });
+  return files;
 }
 
-export interface FilePayload {
-  fileId: number;
-  buffer: ArrayBuffer;
+export function extractOutgoingFiles(obj?: { [key: string]: any }): Binary[] {
+  const files: Binary[] = [];
+  for (let file of findBinaries(obj || {})) {
+    const found = files.find(f => f.equal(file));
+    if (found) {
+      file.clone(found);
+    } else {
+      files.push(file);
+    }
+  }
+  return files;
 }
 
-export interface FileRequestPayload {
-  id: number;
-  offset: number;
+export function parseMessage(buffer: ArrayBuffer) {
+  const message = Buffer.from(buffer);
+  let result;
+  // TODO: Check buffer size before accessing it
+  let payloadBase = {
+    id: message.readUInt32LE(0),
+    type: message.readUInt32LE(4),
+  };
+  if (payloadBase.type === MessageType.GQL_BINARY_REQUEST) {
+    const payload: FileRequestPayload = {
+      id: message.readUInt32LE(8),
+      offset: message.readUInt32LE(12),
+    };
+    result = {
+      ...payloadBase,
+      payload,
+    };
+  } else {
+    const availableTypes = [
+      MessageType.GQL_CONNECTION_INIT,
+      MessageType.GQL_START,
+      MessageType.GQL_STOP,
+      MessageType.GQL_CONNECTION_TERMINATE,
+      MessageType.GQL_CONNECTION_ERROR,
+      MessageType.GQL_CONNECTION_ACK,
+      MessageType.GQL_COMPLETE,
+      MessageType.GQL_ERROR,
+      MessageType.GQL_DATA,
+      MessageType.GQL_CONNECTION_KEEP_ALIVE,
+    ];
+    if (availableTypes.includes(payloadBase.type)) {
+      const payloadStr = Buffer.from(buffer, 8).toString();
+      const payload = payloadStr.length > 0 ? JSON.parse(payloadStr) : null;
+      result = {
+        ...payloadBase,
+        payload,
+      };
+    }
+  }
+  return result;
+}
+
+export function buildMessage(id: number, type: number, payload: any): ArrayBuffer {
+  let serializedMessage: string = JSON.stringify(payload) || '';
+  const headerSize = 8;
+  const message = new Buffer(headerSize + serializedMessage.length);
+  message.writeUInt32LE(id, 0);
+  message.writeUInt32LE(type, 4);
+  Buffer.from(serializedMessage).copy(message, headerSize);
+  return message.buffer as ArrayBuffer;
 }

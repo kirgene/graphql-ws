@@ -9,6 +9,7 @@ export enum MessageType {
   GQL_START, // Client -> Server
   GQL_DATA, // Server -> Client
   GQL_BINARY, // Server <-> Client
+  GQL_BINARY_ACK, // Server <-> Client
   GQL_BINARY_REQUEST, // Server <-> Client
   GQL_ERROR, // Server -> Client
   GQL_COMPLETE, // Server -> Client

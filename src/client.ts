@@ -1,5 +1,3 @@
-import {Subject} from "rxjs/Subject";
-
 declare let window: any;
 const _global = typeof global !== 'undefined' ? global : (typeof window !== 'undefined' ? window : {});
 const NativeWebSocket = _global.WebSocket || _global.MozWebSocket;
@@ -17,11 +15,14 @@ import $$observable from 'symbol-observable';
 import { GRAPHQL_WS } from './protocol';
 import { WS_TIMEOUT } from './defaults';
 import { MessageType } from './message-type';
-import {Binary, DataFunction, CompleteFunction, SerializedBinary} from './types/Binary';
+import {Binary} from './Binary';
+import {BinarySender} from './BinarySender';
 import {
-  BINARY_CHUNK_SIZE, deserializeBinaries, FilePayload, FileRequestPayload, findBinaries,
-  IncomingFile,
+  buildMessage,
+  extractIncomingFiles, extractOutgoingFiles, FileRequestPayload, parseMessage,
 } from './common';
+
+export { Readable, Writable, Buffer } from 'readable-stream';
 
 export { Binary };
 
@@ -57,10 +58,6 @@ export interface Operations {
   [id: number]: Operation;
 }
 
-export interface IncomingFiles {
-  [id: number]: IncomingFile[];
-}
-
 export interface OperationFiles {
   [id: number]: Binary[];
 }
@@ -88,7 +85,7 @@ export class SubscriptionClient {
   public client: any;
   public operations: Operations;
   private filesOut: OperationFiles;
-  private filesIn: IncomingFiles;
+  private filesIn: OperationFiles;
   private url: string;
   private nextOperationId: number;
   private connectionParams: ConnectionParamsOptions;
@@ -310,7 +307,7 @@ export class SubscriptionClient {
     this.applyMiddlewares(options)
       .then(async processedOptions => {
         this.checkOperationOptions(processedOptions, handler);
-        this.filesOut[opId] = await this.extractFiles(processedOptions.variables);
+        this.filesOut[opId] = extractOutgoingFiles(processedOptions.variables);
         if (this.operations[opId]) {
           this.operations[opId] = { options: processedOptions, handler };
 
@@ -394,115 +391,6 @@ export class SubscriptionClient {
     }
   }
 
-  private async sendSingleFile(opId: number, file: Binary, offset = 0) {
-    const headerSize = 4 * 3;
-    const chunkSize = BINARY_CHUNK_SIZE;
-
-    const buffer = new DataView(new ArrayBuffer(headerSize + chunkSize));
-    buffer.setUint32(0, opId, true);
-    buffer.setUint32(4, MessageType.GQL_BINARY, true);
-    buffer.setUint32(8, file.getId(), true);
-
-    file.initRead(offset);
-    let read: number;
-    do {
-      read = await file.readInto(buffer.buffer, chunkSize, headerSize);
-      let buf = buffer.buffer;
-      if (read < chunkSize) {
-        buf = buffer.buffer.slice(0, headerSize + read);
-      }
-      this.sendMessageRaw(buf);
-    } while (read === chunkSize);
-    this.sendMessageRaw(buffer.buffer.slice(0, headerSize)); // EOS
-  }
-
-  private async extractFiles(variables?: { [key: string]: any }): Promise<Binary[]> {
-    const files: Binary[] = [];
-    for (let file of findBinaries(variables || {})) {
-      await file.initMetadata();
-      const found = files.find(f => f.equal(file));
-      if (found) {
-        file.clone(found);
-      } else {
-        files.push(file);
-      }
-    }
-    return files;
-  }
-
-  private binaryReader(resource: any, offset: number, onData: DataFunction, onComplete: CompleteFunction) {
-    const { opId, fileId } = resource;
-    const file = this.filesIn[opId].find(f => f.binary.getId() === fileId);
-    const reader = file.reader;
-    const request = {
-      id: fileId,
-      offset,
-    };
-    this.sendMessage(opId, MessageType.GQL_BINARY_REQUEST, request);
-    reader.subscribe(
-      async (data: ArrayBuffer) => onData(data),
-      async (error: any) => onComplete(error),
-      async () => onComplete(),
-    );
-  }
-
-  private processFiles(opId: number, response?: { [key: string]: any }) {
-    deserializeBinaries(response || {}, (file) => {
-      const obj = { opId, fileId: file.id };
-      const binary = new Binary(obj, { onRead: this.binaryReader.bind(this) }, file);
-      const found = this.filesIn[opId].find(f => f.binary.equal(binary));
-      if (found) {
-        binary.clone(found.binary);
-      } else {
-        const reader = new Subject();
-        this.filesIn[opId].push({
-          binary,
-          reader,
-        });
-      }
-      return binary;
-    });
-  }
-
-  private buildMessage(id: number, type: number, payload: any): ArrayBuffer {
-    let serializedMessage: string;
-
-    if (payload) {
-      const payloadToReturn = payload && payload.query ?
-        {
-          ...payload,
-          query: typeof payload.query === 'string' ? payload.query : print(payload.query),
-        } :
-        payload;
-      serializedMessage = JSON.stringify(payloadToReturn);
-      let parsedMessage: any;
-      try {
-        parsedMessage = JSON.parse(serializedMessage);
-      } catch (e) {
-        throw new Error(`Message must be JSON-serializable. Got: ${payloadToReturn}`);
-      }
-    } else {
-      serializedMessage = '';
-    }
-
-    const enc = new window.TextEncoder('utf-8');
-
-    /*
-    const Message = StructType({
-      id: ref.types.uint32,
-      type: ref.types.uint32,
-      payload: ref.types.CString,
-    });
-     */
-    const headerSize = 4 * 2;
-
-    const message = new DataView(new ArrayBuffer(headerSize + serializedMessage.length));
-    message.setUint32(0, id, true);
-    message.setUint32(4, type, true);
-    new Uint8Array(message.buffer).set(enc.encode(serializedMessage), 8);
-    return message.buffer;
-  }
-
   // ensure we have an array of errors
   private formatErrors(errors: any): FormatedError[] {
     if (Array.isArray(errors)) {
@@ -527,7 +415,7 @@ export class SubscriptionClient {
   }
 
   private sendMessage(id: number, type: number, payload: any) {
-    this.sendMessageRaw(this.buildMessage(id, type, payload));
+    this.sendMessageRaw(buildMessage(id, type, payload));
   }
 
   // send message, or queue it if connection is not open
@@ -562,7 +450,7 @@ export class SubscriptionClient {
       Object.keys(this.operations).forEach((key) => {
         const opId = parseInt(key, 10);
         this.unsentMessagesQueue.push(
-          this.buildMessage(opId, MessageType.GQL_START, this.operations[opId].options),
+          buildMessage(opId, MessageType.GQL_START, this.operations[opId].options),
         );
       });
       this.reconnecting = true;
@@ -605,9 +493,32 @@ export class SubscriptionClient {
     }, this.maxConnectTimeGenerator.duration());
   }
 
+  private patchSocket() {
+    // Make it node.js ws compatible
+    this.client.removeListener = this.client.removeEventListener;
+    let sockSend = this.client.send;
+    sockSend = sockSend.bind(this.client);
+    this.client.send = (data: any, callback: Function) => {
+      try {
+        sockSend(data);
+        if (callback) {
+          callback();
+        }
+      } catch (err) {
+        if (callback) {
+          callback(err);
+        } else {
+          throw err;
+        }
+      }
+    };
+  }
+
   private connect() {
     this.client = new this.wsImpl(this.url, GRAPHQL_WS);
     this.client.binaryType = 'arraybuffer';
+
+    this.patchSocket();
 
     this.checkMaxConnectTimeout();
 
@@ -639,49 +550,25 @@ export class SubscriptionClient {
     };
   }
 
-  private parseMessage(buffer: any) {
-    const message = new DataView(buffer);
-    let result;
-    let base = {
-      id: message.getUint32(0, true),
-      type: message.getUint32(4, true),
-    };
-    if (base.type === MessageType.GQL_BINARY) {
-      const payload: FilePayload = {
-        fileId: message.getUint32(8, true),
-        buffer: buffer.slice(12),
-      };
-      result = {
-        ...base,
-        payload,
-      };
-    } else {
-      const dec = new window.TextDecoder('utf-8');
-      let payload = dec.decode(buffer.slice(8));
-      result = {
-        ...base,
-        payload: payload.length ? JSON.parse(payload) : null,
-      };
-    }
-    return result;
-  }
-
   private async processReceivedData(receivedData: any) {
-    const parsedMessage = this.parseMessage(receivedData);
+    const parsedMessage = parseMessage(receivedData);
+    if (!parsedMessage) {
+      return;
+    }
     const opId = parsedMessage.id;
-
+    /*
     if (
       [ MessageType.GQL_DATA,
         MessageType.GQL_COMPLETE,
         MessageType.GQL_ERROR,
       ].indexOf(parsedMessage.type) !== -1 && !this.operations[opId]
     ) {
-      console.log('DEBUGGER (yki)');
-      debugger;
+      //debugger;
       this.unsubscribe(opId);
 
       return;
     }
+    */
 
     switch (parsedMessage.type) {
       case MessageType.GQL_CONNECTION_ERROR:
@@ -715,33 +602,34 @@ export class SubscriptionClient {
       case MessageType.GQL_DATA: {
         const parsedPayload = !parsedMessage.payload.errors ?
           parsedMessage.payload : {...parsedMessage.payload, errors: this.formatErrors(parsedMessage.payload.errors)};
-        this.processFiles(opId, parsedPayload);
+        this.filesIn[opId] = extractIncomingFiles(opId, this.client, parsedPayload);
         this.operations[opId].handler(null, parsedPayload);
-        break;
-      }
-
-      case MessageType.GQL_BINARY: {
-        const payload: FilePayload = (<FilePayload>parsedMessage.payload);
-        if (this.filesIn[opId]) {
-          const file = this.filesIn[opId].find(f => f.binary.getId() === payload.fileId);
-          if (file) {
-            file.reader.next(payload.buffer);
-            if (payload.buffer.byteLength === 0) {
-              file.reader.complete();
-            }
-          }
-        }
         break;
       }
 
       case MessageType.GQL_BINARY_REQUEST: {
         const payload: FileRequestPayload = (<FileRequestPayload> parsedMessage.payload);
-        const { id, offset } = payload;
-        const file = this.filesOut[opId].find(f => f.getId() === id);
-        if (file) {
-          await this.sendSingleFile(opId, file, offset);
-          const index = this.filesOut[opId].findIndex(f => f === file);
-          delete this.filesOut[opId][index];
+        if (this.filesOut[opId]) {
+          const { id, offset } = payload;
+          const file = this.filesOut[opId].find(f => f.getId() === id);
+          if (file) {
+            const reader = file.createReadStream(offset);
+            const writer = new BinarySender({
+              opId,
+              fileId: file.getId(),
+              socket: this.client,
+            });
+            const finish = new Promise((resolve, reject) => {
+              reader.pipe(writer)
+                .on('finish', resolve)
+                .on('error', reject);
+            });
+            await finish;
+            if (this.filesOut[opId]) {
+              const index = this.filesOut[opId].findIndex(f => f === file);
+              delete this.filesOut[opId][index];
+            }
+          }
         }
         break;
       }
