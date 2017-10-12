@@ -172,11 +172,11 @@ export function parseMessage(buffer: ArrayBuffer) {
 }
 
 export function buildMessage(id: number, type: number, payload: any): ArrayBuffer {
-  let serializedMessage: string = JSON.stringify(payload) || '';
+  const serializedMessage = Buffer.from(JSON.stringify(payload) || '');
   const headerSize = 8;
   const message = new Buffer(headerSize + serializedMessage.length);
   message.writeUInt32LE(id, 0);
   message.writeUInt32LE(type, 4);
-  Buffer.from(serializedMessage).copy(message, headerSize);
+  serializedMessage.copy(message, headerSize);
   return message.buffer as ArrayBuffer;
 }

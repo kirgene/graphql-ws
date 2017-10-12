@@ -1,6 +1,6 @@
 {
   "name": "graphql-ws",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "WebSocket transport for GraphQL",
   "main": "dist/index.js",
   "browser": "dist/client.js",
