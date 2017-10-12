@@ -1,8 +1,9 @@
 import {Readable, ReadableOptions} from 'stream';
 import autobind from 'class-autobind';
 import {MessageType} from './message-type';
-import * as WebSocket from 'ws';
+import * as WebSocket from 'uws';
 import {EventEmitter} from 'events';
+import {SocketLike} from './common';
 
 export { Readable, ReadableOptions };
 
@@ -10,7 +11,7 @@ export interface BinaryReceiverOptions {
   offset: number;
   opId: number;
   fileId: number;
-  socket: WebSocket;
+  socket: SocketLike;
 }
 
 export class BinaryReceiver extends Readable {
@@ -18,7 +19,7 @@ export class BinaryReceiver extends Readable {
   private ack: Buffer;
   private opId: number;
   private fileId: number;
-  private socket: WebSocket;
+  private socket: SocketLike;
   private events: EventEmitter;
   private offset: number;
 
@@ -81,7 +82,7 @@ export class BinaryReceiver extends Readable {
       this.stopReceiving();
       this.push(null);
     } else {
-      if (!this.push(payload)) {
+      if (!this.push(Buffer.from(payload))) {
         const read = new Promise(resolve => this.events.once('read', resolve));
         await read;
       }

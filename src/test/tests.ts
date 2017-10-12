@@ -7,7 +7,7 @@ import {
   expect,
 } from 'chai';
 import * as sinon from 'sinon';
-import * as WebSocket from 'ws';
+import * as WebSocket from 'uws';
 import { specifiedRules, execute, subscribe } from 'graphql';
 
 Object.assign(global, {

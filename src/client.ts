@@ -19,7 +19,7 @@ import {Binary} from './Binary';
 import {BinarySender} from './BinarySender';
 import {
   buildMessage,
-  extractIncomingFiles, extractOutgoingFiles, FileRequestPayload, parseMessage,
+  extractIncomingFiles, extractOutgoingFiles, FileRequestPayload, parseMessage, SocketWrapper,
 } from './common';
 
 export { Readable, Writable, Buffer } from 'readable-stream';
@@ -82,7 +82,7 @@ export interface ClientOptions {
 }
 
 export class SubscriptionClient {
-  public client: any;
+  public client: SocketWrapper;
   public operations: Operations;
   private filesOut: OperationFiles;
   private filesIn: OperationFiles;
@@ -493,12 +493,12 @@ export class SubscriptionClient {
     }, this.maxConnectTimeGenerator.duration());
   }
 
-  private patchSocket() {
+  private patchSocket(socket: any) {
     // Make it node.js ws compatible
-    this.client.removeListener = this.client.removeEventListener;
-    let sockSend = this.client.send;
-    sockSend = sockSend.bind(this.client);
-    this.client.send = (data: any, callback: Function) => {
+    socket.on = (event: string, cb: any) =>
+      socket.addEventListener(event, ({ data }: {data: ArrayBuffer}) => cb(data));
+    const sockSend = socket.send.bind(socket);
+    socket.send = (data: any, callback: Function) => {
       try {
         sockSend(data);
         if (callback) {
@@ -515,14 +515,14 @@ export class SubscriptionClient {
   }
 
   private connect() {
-    this.client = new this.wsImpl(this.url, GRAPHQL_WS);
-    this.client.binaryType = 'arraybuffer';
-
-    this.patchSocket();
+    const socket = new this.wsImpl(this.url, GRAPHQL_WS);
+    this.patchSocket(socket);
+    this.client = new SocketWrapper(socket);
+    this.client.getSocket().binaryType = 'arraybuffer';
 
     this.checkMaxConnectTimeout();
 
-    this.client.onopen = () => {
+    this.client.getSocket().onopen = () => {
       this.clearMaxConnectTimeout();
       this.closedByUser = false;
       this.eventEmitter.emit(this.reconnecting ? 'reconnecting' : 'connecting');
@@ -534,20 +534,20 @@ export class SubscriptionClient {
       this.flushUnsentMessagesQueue();
     };
 
-    this.client.onclose = () => {
+    this.client.getSocket().onclose = () => {
       if ( !this.closedByUser ) {
         this.close(false, false);
       }
     };
 
-    this.client.onerror = () => {
+    this.client.getSocket().onerror = () => {
       // Capture and ignore errors to prevent unhandled exceptions, wait for
       // onclose to fire before attempting a reconnect.
     };
 
-    this.client.onmessage = ({ data }: {data: any}) => {
+    this.client.on('message', (data: ArrayBuffer) => {
       this.processReceivedData(data);
-    };
+    });
   }
 
   private async processReceivedData(receivedData: any) {

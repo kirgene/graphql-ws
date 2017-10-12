@@ -1,14 +1,15 @@
 import {Writable, WritableOptions} from 'stream';
 import autobind from 'class-autobind';
 import {MessageType} from './message-type';
-import * as WebSocket from 'ws';
+import * as WebSocket from 'uws';
+import {SocketLike} from './common';
 
 export { Writable, WritableOptions };
 
 export interface BinarySenderOptions {
   opId: number;
   fileId: number;
-  socket: WebSocket;
+  socket: SocketLike;
 }
 
 export class BinarySender extends Writable {
@@ -18,7 +19,7 @@ export class BinarySender extends Writable {
   private seq: number;
   private opId: number;
   private fileId: number;
-  private socket: WebSocket;
+  private socket: SocketLike;
 
   constructor(opts: BinarySenderOptions, streamOpts?: WritableOptions) {
     super(streamOpts);

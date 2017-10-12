@@ -1,10 +1,69 @@
 import {Binary, SerializedBinary} from './Binary';
 import {BinaryReceiver} from './BinaryReceiver';
 import {MessageType} from './message-type';
+import {EventEmitter} from 'events';
 
 export interface FileRequestPayload {
   id: number;
   offset: number;
+}
+
+export class SocketWrapper implements SocketLike {
+  private events: EventEmitter;
+  private socket: any;
+
+  constructor(socket: any) {
+    this.events = new EventEmitter();
+    this.socket = socket;
+    this.socket.on('message', this.onMessage.bind(this));
+  }
+
+  public send(data: any, cb?: (err: Error) => void): void {
+    this.socket.send(data, cb);
+  }
+
+  public get readyState(): number {
+    return this.socket.readyState;
+  }
+
+  public close(code?: number, data?: any): void {
+    this.socket.close(code, data);
+  }
+
+  public getSocket(): any {
+    return this.socket;
+  }
+
+  public on(event: 'message', cb: (data: any, flags: { binary: boolean }) => void): this {
+    this.events.on('message', cb);
+    return this;
+  }
+
+  public once(event: 'message', cb: (data: any, flags: { binary: boolean }) => void): this {
+    this.events.once('message', cb);
+    return this;
+  }
+
+  public removeListener(event: 'message', cb: (data: any, flags: { binary: boolean }) => void): this {
+    this.events.removeListener('message', cb);
+    return this;
+  }
+
+  public removeEventListener(event: 'message', cb: (data: any, flags: { binary: boolean }) => void): this {
+    this.events.removeListener('message', cb);
+    return this;
+  }
+
+  private onMessage(message: ArrayBuffer) {
+    this.events.emit('message', message);
+  }
+}
+
+export interface SocketLike {
+  send: (data: any, cb?: (err: Error) => void) => void;
+  on: Function;
+  once: Function;
+  removeListener: Function;
 }
 
 export function repeatPromise(promise: () => Promise<boolean>): any {

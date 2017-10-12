@@ -1,4 +1,4 @@
-import * as WebSocket from 'ws';
+import * as WebSocket from 'uws';
 import { EventEmitter } from 'events';
 
 import { MessageType } from './message-type';
@@ -21,7 +21,7 @@ import { isASubscriptionOperation } from './utils/is-subscriptions';
 import { IncomingMessage } from 'http';
 import {Binary} from './Binary';
 import {
-  FileRequestPayload, extractIncomingFiles, extractOutgoingFiles, buildMessage, parseMessage,
+  FileRequestPayload, extractIncomingFiles, extractOutgoingFiles, buildMessage, parseMessage, SocketWrapper,
 } from './common';
 import {BinarySender} from './BinarySender';
 
@@ -39,7 +39,7 @@ export interface ExecutionParams<TContext = any> {
 
 export type ConnectionContext = {
   initPromise?: Promise<any>,
-  socket: WebSocket,
+  socket: SocketWrapper,
   filesIn: {
     [id: number]: Binary[],
   }
@@ -165,23 +165,17 @@ export class SubscriptionServer {
     // Init and connect websocket server to http
     this.wsServer = new WebSocket.Server(socketOptions || {});
 
-    const connectionHandler = ((socket: WebSocket, request: IncomingMessage) => {
-      // Add `upgradeReq` to the socket object to support old API, without creating a memory leak
-      // See: https://github.com/websockets/ws/pull/1099
-      (socket as any).upgradeReq = request;
-      (socket as any).binaryType = 'arraybuffer';
-      if (socket.protocol === undefined ||
-        (socket.protocol.indexOf(GRAPHQL_WS) === -1)) {
+    const connectionHandler = ((socket: WebSocket) => {
+      if (socket.upgradeReq.headers['sec-websocket-protocol'] !== GRAPHQL_WS) {
         // Close the connection with an error code, ws v2 ensures that the
         // connection is cleaned up even when the closing handshake fails.
         // 1002: protocol error
         socket.close(1002);
-
         return;
       }
 
       const connectionContext: ConnectionContext = Object.create(null);
-      connectionContext.socket = socket;
+      connectionContext.socket = new SocketWrapper(socket);
       connectionContext.operations = {};
       connectionContext.filesIn = {};
       connectionContext.filesOut = {};
@@ -221,7 +215,7 @@ export class SubscriptionServer {
 
       socket.on('error', connectionClosedHandler);
       socket.on('close', connectionClosedHandler);
-      socket.on('message', this.onMessage(connectionContext));
+      connectionContext.socket.on('message', this.onMessage(connectionContext));
     });
 
     this.wsServer.on('connection', connectionHandler);

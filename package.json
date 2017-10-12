@@ -1,6 +1,6 @@
 {
   "name": "graphql-ws",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "WebSocket transport for GraphQL",
   "main": "dist/index.js",
   "browser": "dist/client.js",
@@ -18,7 +18,7 @@
     "lodash.isstring": "^4.0.1",
     "readable-stream": "^2.3.3",
     "symbol-observable": "^1.0.4",
-    "ws": "^3.0.0"
+    "uws": "^8.14.1"
   },
   "scripts": {
     "compile": "tsc",
@@ -44,7 +44,7 @@
     "@types/mocha": "^2.2.41",
     "@types/node": "^8.0.8",
     "@types/sinon": "^2.3.0",
-    "@types/ws": "^3.0.0",
+    "@types/uws": "^0.13.0",
     "chai": "^4.0.2",
     "graphql": "^0.11.3",
     "graphql-subscriptions": "^0.5.0",
