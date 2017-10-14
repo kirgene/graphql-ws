@@ -408,7 +408,7 @@ export class SubscriptionClient {
     }
 
     return [{
-      // nameGraphQLWS: 'FormatedError',
+      name: 'FormatedError',
       message: 'Unknown error',
       originalError: errors,
     }];
