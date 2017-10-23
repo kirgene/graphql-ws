@@ -436,7 +436,7 @@ export class SubscriptionServer {
               let lastVal: ExecutionResult;
               forAwaitEach(
                 createAsyncIterator(executionIterable) as any,
-                async (value: ExecutionResult) => {
+                (value: ExecutionResult) => {
                   let result = value;
                   connectionContext.filesOut[opId] = extractOutgoingFiles(result.data);
 
