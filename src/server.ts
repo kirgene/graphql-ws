@@ -1,5 +1,6 @@
 import * as WebSocket from 'uws';
 import { EventEmitter } from 'events';
+import * as jiff from 'jiff';
 
 import { MessageType } from './message-type';
 import { GRAPHQL_WS } from './protocol';
@@ -432,6 +433,7 @@ export class SubscriptionServer {
                 params,
               }));
             }).then(({ executionIterable, params }) => {
+              let lastVal: ExecutionResult;
               forAwaitEach(
                 createAsyncIterator(executionIterable) as any,
                 async (value: ExecutionResult) => {
@@ -445,7 +447,12 @@ export class SubscriptionServer {
                       console.error('Error in formatError function:', err);
                     }
                   }
-
+                  if (lastVal) {
+                    result = { data: { __patch: jiff.diff(lastVal.data, value.data, { invertible : false } ) } };
+                  } else {
+                    result = value;
+                  }
+                  lastVal = value;
                   SubscriptionServer.sendMessage(connectionContext, opId, MessageType.GQL_DATA, result);
                 }).then(async () => {
                   // Wait for all outgoing files being processed

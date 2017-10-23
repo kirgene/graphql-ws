@@ -18,7 +18,6 @@ declare module 'lodash.isstring' {
 }
 
 declare module 'backo2';
-
 declare module 'readable-stream';
-
 declare module 'class-autobind';
+declare module 'jiff';
