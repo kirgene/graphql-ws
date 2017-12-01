@@ -495,8 +495,10 @@ export class SubscriptionClient {
 
   private patchSocket(socket: any) {
     // Make it node.js ws compatible
-    socket.on = (event: string, cb: any) =>
-      socket.addEventListener(event, ({ data }: {data: ArrayBuffer}) => cb(data));
+    if (socket.addEventListener) {
+      socket.on = (event: string, cb: any) =>
+        socket.addEventListener(event, ({ data }: {data: ArrayBuffer}) => cb(data));
+    }
     const sockSend = socket.send.bind(socket);
     socket.send = (data: any, callback: Function) => {
       try {
