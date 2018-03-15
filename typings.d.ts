@@ -1,5 +1,5 @@
 interface Array<T> {
-  indexOfField : (propertyName: string, value: any) => number;
+  indexOfField: (propertyName: string, value: any) => number;
 }
 
 declare module 'lodash.assign' {

@@ -14,7 +14,7 @@
     "pretty": true,
     "declaration": true,
     "skipLibCheck": true,
-    "lib": ["ES2017", "es6", "esnext.asynciterable"],
+    "lib": ["ES2017", "es6", "esnext.asynciterable", "dom"],
     "types": [
       "node"
     ]
