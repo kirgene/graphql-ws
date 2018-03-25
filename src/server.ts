@@ -17,7 +17,6 @@ import {
 } from 'graphql';
 import { createEmptyIterable } from './utils/empty-iterable';
 import { createAsyncIterator, forAwaitEach, isAsyncIterable } from 'iterall';
-import { createIterableFromPromise } from './utils/promise-to-iterable';
 import { isASubscriptionOperation } from './utils/is-subscriptions';
 import { IncomingMessage } from 'http';
 import {Binary} from './Binary';
@@ -391,13 +390,11 @@ export class SubscriptionServer {
               }
 
               const document = typeof baseParams.query !== 'string' ? baseParams.query : parse(baseParams.query);
-              let executionIterable: Promise<AsyncIterator<ExecutionResult> | ExecutionResult>;
+              let executionPromise: Promise<AsyncIterator<ExecutionResult> | ExecutionResult>;
               const validationErrors: Error[] = validate(this.schema, document, this.specifiedRules);
 
               if ( validationErrors.length > 0 ) {
-                executionIterable = Promise.resolve(createIterableFromPromise<ExecutionResult>(
-                  Promise.resolve({ errors: validationErrors }),
-                ));
+                executionPromise = Promise.resolve({ errors: validationErrors });
               } else {
                 let executor: SubscribeFunction | ExecuteFunction = this.execute;
                 if (this.subscribe && isASubscriptionOperation(document, params.operationName)) {
@@ -406,36 +403,23 @@ export class SubscriptionServer {
 
                 connectionContext.filesIn[opId] = extractIncomingFiles(opId, connectionContext.socket, params.variables);
 
-                const promiseOrIterable = executor(this.schema,
+                executionPromise = Promise.resolve(executor(this.schema,
                   document,
                   this.rootValue,
                   params.context,
                   params.variables,
-                  params.operationName);
-
-                if (!isAsyncIterable(promiseOrIterable) && promiseOrIterable instanceof Promise) {
-                  executionIterable = promiseOrIterable;
-                } else if (isAsyncIterable(promiseOrIterable)) {
-                  executionIterable = Promise.resolve(promiseOrIterable as any as AsyncIterator<ExecutionResult>);
-                } else {
-                  // Unexpected return value from execute - log it as error and trigger an error to client side
-                  console.error('Invalid `execute` return type! Only Promise or AsyncIterable are valid values!');
-
-                  SubscriptionServer.sendError(connectionContext, opId, {
-                    message: 'GraphQL execute engine is not available',
-                  });
-                }
+                  params.operationName));
               }
 
-              return executionIterable.then((ei) => ({
-                executionIterable: isAsyncIterable(ei) ?
-                  ei : createAsyncIterator([ ei ]),
-                params,
+              return executionPromise.then((executionResult) => ({
+                executionIterable: isAsyncIterable(executionResult) ?
+                  executionResult : createAsyncIterator([ executionResult ]),
+                  params,
               }));
             }).then(({ executionIterable, params }) => {
               let lastVal: ExecutionResult;
               forAwaitEach(
-                createAsyncIterator(executionIterable) as any,
+                executionIterable as any,
                 (value: ExecutionResult) => {
                   let result = value;
                   connectionContext.filesOut[opId] = extractOutgoingFiles(result.data);
