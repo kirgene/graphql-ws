@@ -1,6 +1,6 @@
 {
   "name": "graphql-ws",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "WebSocket transport for GraphQL",
   "main": "dist/index.js",
   "browser": "dist/client.js",
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@types/chai": "^4.1.2",
-    "@types/graphql": "^0.12.4",
+    "@types/graphql": "^0.12.6",
     "@types/lodash": "^4.14.104",
     "@types/mocha": "^2.2.48",
     "@types/node": "^9.4.7",

@@ -558,19 +558,20 @@ export class SubscriptionClient {
       return;
     }
     const opId = parsedMessage.id;
-    /*
-    if (
-      [ MessageType.GQL_DATA,
-        MessageType.GQL_COMPLETE,
+
+    if ([
+        MessageType.GQL_DATA,
+        MessageType.GQL_BINARY,
+        MessageType.GQL_BINARY_ACK,
+        MessageType.GQL_BINARY_REQUEST,
         MessageType.GQL_ERROR,
+        MessageType.GQL_COMPLETE,
       ].indexOf(parsedMessage.type) !== -1 && !this.operations[opId]
     ) {
-      //debugger;
       this.unsubscribe(opId);
 
       return;
     }
-    */
 
     switch (parsedMessage.type) {
       case MessageType.GQL_CONNECTION_ERROR:
