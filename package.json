@@ -1,6 +1,6 @@
 {
   "name": "graphql-ws",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "WebSocket transport for GraphQL",
   "main": "dist/index.js",
   "browser": "dist/client.js",
@@ -58,7 +58,8 @@
     "ts-node": "^5.0.1",
     "tslint": "^5.9.1",
     "typescript": "^2.7.2",
-    "webpack": "^4.1.1"
+    "webpack": "^4.4.0",
+    "webpack-cli": "^2.0.13"
   },
   "typings": "dist/index.d.ts",
   "typescript": {

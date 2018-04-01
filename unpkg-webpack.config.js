@@ -1,6 +1,7 @@
 var path = require('path');
 
 module.exports = {
+  mode: 'production',
   context: path.join(__dirname, '/dist'),
   entry: './client.js',
   output: {
